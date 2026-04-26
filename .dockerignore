@@ -1,0 +1,49 @@
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ── Virtual environments ───────────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── IDE / editor ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Runtime outputs (mounted as volumes instead) ──────────────────────
+downloads/
+jobs.json
+tds_fetcher.log
+tds_session.json
+session_cache_*.json
+
+# ── Output files ──────────────────────────────────────────────────────
+*.xlsx
+*.json
+*.pdf
+*.png
+
+# ── Secrets ───────────────────────────────────────────────────────────
+.env
+*.key
+
+# ── Version control ───────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Diagnostics / temp ────────────────────────────────────────────────
+*.html
+scrape_error.png
+nav_error.png
+login_*.png
+browser_fetch_diag.html
