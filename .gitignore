@@ -1,0 +1,34 @@
+# ── Python / build artifacts ───────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# ── Virtual environments ───────────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── IDE ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+
+# ── Runtime outputs ────────────────────────────────────────────────────
+downloads/
+*.xlsx
+*.json
+*.pdf
+*.png
+
+# ── Secrets ───────────────────────────────────────────────────────────
+.env
+
+# ── Logs / session cache ───────────────────────────────────────────────
+tds_fetcher.log
+tds_session.json
+session_cache_*.json
+
+# ── Diagnostics ────────────────────────────────────────────────────────
+*.html
