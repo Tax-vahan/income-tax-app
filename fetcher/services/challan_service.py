@@ -90,10 +90,11 @@ def _parse_challan_list(data: dict) -> tuple[Optional[list], int]:
 
 # ── Thread-isolated detail fetch ──────────────────────────────────────────────
 
-def _fetch_detail_safe(session, crn: str, tan: str) -> dict:
+def _fetch_detail_safe(session, summary: dict, tan: str) -> dict:
     """Fetch one challan's detail.  Never raises so worker threads stay healthy."""
+    crn = summary.get("crn") or summary.get("cin", "")[:14]
     try:
-        result = _api_fetch_detail(session, crn, tan)
+        result = _api_fetch_detail(session, summary, tan)
         if not result or not result.get("successFlag"):
             log.warning("Detail API response  CRN=%s: %s", crn,
                         result.get("messages") if result else "empty")
@@ -188,10 +189,40 @@ def run(
             "detail_success_rate": 100.0,
         }
 
+    import json
+    for item in all_challans:
+        jstr = item.get("jsonData")
+        if jstr and isinstance(jstr, str):
+            try:
+                jdata = json.loads(jstr)
+                for k, v in jdata.items():
+                    # Only overwrite if v is non-empty and target is empty
+                    if v not in (None, "") and item.get(k) in (None, "", 0):
+                        item[k] = v
+                    elif k not in item:
+                        item[k] = v
+            except:
+                pass
+
     all_challans = filter_by_date(all_challans, cfg["FROM_DATE"], cfg["TO_DATE"])
+
     log.info("Challans after date filter: %d", len(all_challans))
 
+    if not all_challans:
+        log.warning("No challans remain after date filter.")
+        return [], {
+            "duration":            round(time.time() - t0, 2),
+            "count":               0,
+            "detail_total":        0,
+            "detail_success":      0,
+            "detail_success_rate": 100.0,
+        }
+
+    if all_challans:
+        log.debug("DEBUG: First challan raw summary: %s", all_challans[0])
+
     # ── Normalise CRN field ────────────────────────────────────────────
+
     first     = all_challans[0]
     crn_field = next(
         (f for f in ("crn", "challanRefNum", "challanReferenceNumber",
@@ -205,6 +236,7 @@ def run(
     )
     for item in all_challans:
         item["crn"] = item.get(crn_field) or item.get("crn", "")
+
 
     # ── [3] Smart detail fetch ─────────────────────────────────────────
     detail_mode = cfg.get("DETAIL_MODE", cfg.get("DETAIL_FETCH", "AUTO"))
@@ -246,7 +278,7 @@ def run(
                     enriched.append(enrich(summary, {}))
                     continue
                 fut = pool.submit(
-                    _fetch_detail_safe, session, summary["crn"], tan
+                    _fetch_detail_safe, session, summary, tan
                 )
                 future_map[fut] = summary
 

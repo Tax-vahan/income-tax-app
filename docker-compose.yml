@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   tds-api:
     build:
@@ -12,46 +10,32 @@ services:
     ports:
       - "8001:8001"
 
-    # ── Environment overrides ──────────────────────────────────────────
-    # Secrets should be injected at runtime — do NOT hardcode TAN/PASSWORD here.
-    # Use a .env file or your orchestrator's secret management.
-    env_file:
-      - .env           # optional; silently ignored if file is absent
-
+    # ── Environment ────────────────────────────────────────────────────
+    # To inject secrets without hardcoding, create a .env file:
+    #   echo "TDS_TAN=XXXX12345X"    >> .env
+    #   echo "TDS_PASSWORD=yourpw"   >> .env
+    # Then uncomment the env_file line below.
+    # env_file: .env
     environment:
       PYTHONUNBUFFERED: "1"
-      # Override CONFIG values at runtime (picked up by fetcher/utils/config.py)
-      # TDS_TAN: "XXXX12345X"
-      # TDS_PASSWORD: "yourpassword"
+      DATA_DIR: "/app/data"
+      CHROME_BIN: "/usr/bin/chromium"
+      CHROMEDRIVER_BIN: "/usr/bin/chromedriver"
 
-    # ── Shared memory — headless Chrome needs at least 512 MB ─────────
+    # ── Shared memory — headless Chromium requires ≥512 MB ────────────
     shm_size: "2gb"
 
     # ── Persistent volumes ────────────────────────────────────────────
+    # Mount the whole /app/data directory so Docker never mistakes
+    # a missing file for a directory.  All runtime outputs live here.
     volumes:
-      # Downloaded Excel / JSON output files
+      - ./data:/app/data
       - ./downloads:/app/downloads
-      # Job state survives container restarts
-      - ./jobs.json:/app/jobs.json
-      # Live-tail logs from the host:  tail -f tds_fetcher.log
-      - ./tds_fetcher.log:/app/tds_fetcher.log
-      # Session cache — skip Selenium login on restart if still valid
-      - ./tds_session.json:/app/tds_session.json
 
     # ── Restart policy ────────────────────────────────────────────────
     restart: unless-stopped
 
-    # ── Resource limits (tune to your server) ─────────────────────────
-    deploy:
-      resources:
-        limits:
-          memory: 3G      # Chrome + Python
-          cpus: "2.0"
-        reservations:
-          memory: 512M
-          cpus: "0.5"
-
-    # ── Logging ───────────────────────────────────────────────────────
+    # ── Log rotation ──────────────────────────────────────────────────
     logging:
       driver: "json-file"
       options:

@@ -99,7 +99,8 @@ def _best_date(item: dict) -> tuple[Optional[datetime], Optional[str]]:
     if dt:
         return dt, "crn"
 
-    for field in ("paymentDate", "tenderDt", "tenderDate", "dateOfDeposit"):
+    for field in ("paymentDt", "paymentDate", "tenderDt", "tenderDate", "dateOfDeposit", "paymentTime"):
+
         v = item.get(field)
         if v:
             dt = (_parse_epoch(v) if isinstance(v, (int, float))
@@ -144,12 +145,12 @@ def filter_by_date(items: list, from_date: str, to_date: str) -> list:
         if dt_to and dt > dt_to.replace(hour=23, minute=59, second=59):
             in_range = False
 
-        if in_range:
-            filtered.append(item)
-        else:
+        if not in_range:
             skipped += 1
-            log.debug("Date-filter DROP  CRN=%s  dt=%s  (src=%s)",
-                      item.get("crn", "?"), dt.date(), src)
+            log.debug("  Dropped challan: date %s (from %s) is outside range", dt.strftime("%Y-%m-%d"), src)
+            continue
+
+        filtered.append(item)
 
     if skipped:
         log.info(
@@ -214,18 +215,40 @@ def enrich(summary: dict, detail: dict) -> dict:
     if not m.get("paymentDt") and m.get("paymentDate"):
         m["paymentDt"] = m["paymentDate"]
 
-    # ── Decode BSR code / tender date / challan number from CIN ───────
-    cin = m.get("cin", "")
-    if cin and len(cin) == 18 and cin.isdigit():
+    # ── Decode from alternateCin (Standard Bank CIN) ──────────────────
+    acin = str(m.get("alternateCin", "")).strip()
+    if len(acin) == 20 and acin.isdigit():
         if not m.get("bsrCode"):
-            m["bsrCode"]   = cin[:7]
+            m["bsrCode"]   = acin[:7]
         if not m.get("tenderDt"):
-            m["tenderDt"]  = f"{cin[6:8]}/{cin[8:10]}/20{cin[10:12]}"
+            # Date is usually chars 7-15 (DDMMYYYY)
+            d, mo, y = acin[7:9], acin[9:11], acin[11:15]
+            m["tenderDt"] = f"{d}/{mo}/{y}"
         if not m.get("challanNum"):
-            m["challanNum"] = cin[13:18]
-    elif cin:
-        if not m.get("challanNum"):
-            m["challanNum"] = m.get("crn", "")
+            m["challanNum"] = acin[15:20]
+
+    # ── Decode BSR code / tender date / challan number from CIN ───────
+
+    cin = str(m.get("cin", "")).strip()
+    # Standard Bank CIN: BSR(7) + Date(8) + Serial(5) = 20 chars
+    # However, ITD often returns 18 chars or has bank suffixes.
+    if len(cin) >= 15:
+        # Try to extract from the first 15-20 chars if they look like a CIN
+        prefix = "".join(filter(str.isdigit, cin))
+        if len(prefix) >= 15:
+            if not m.get("bsrCode"):
+                m["bsrCode"]   = prefix[:7]
+            if not m.get("tenderDt") and len(prefix) >= 15:
+                # Date is usually chars 7-14 (DDMMYYYY)
+                # But some CINs use YYMMDD. Let's be cautious.
+                pass 
+        
+    # User specifically wants 'challanNum' (e.g. 00123) not CRN
+    if not m.get("challanNum"):
+        # If we have a detail 'challanNum', it's already in 'm' via the merge loop.
+        # If not, try to fallback to 'brn' or 'challanNo'
+        m["challanNum"] = m.get("brn") or m.get("challanNo") or m.get("crn", "")
+
 
     if not m.get("paymentDt"):
         m["paymentDt"] = m.get("tenderDt") or ""
@@ -245,8 +268,15 @@ def enrich(summary: dict, detail: dict) -> dict:
     except (ValueError, TypeError):
         m["totalAmt"] = 0
 
+    # ── Final date fallback ────────────────────────────────────────────
+    if not m.get("paymentDt"):
+        best_dt, _ = _best_date(m)
+        if best_dt:
+            m["paymentDt"] = best_dt.strftime("%d/%m/%Y")
+
     # ── Normalise date strings ─────────────────────────────────────────
     m["paymentDt"] = _fmt_date(m.get("paymentDt"))
     m["tenderDt"]  = _fmt_date(m.get("tenderDt"))
 
     return m
+

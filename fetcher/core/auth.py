@@ -90,7 +90,8 @@ def _handle_dual_login(driver) -> None:
         for btn in driver.find_elements(By.TAG_NAME, "button"):
             if "Login Here" in btn.text:
                 driver.execute_script("arguments[0].click();", btn)
-                time.sleep(4)
+                time.sleep(1)
+
                 return
     except Exception:
         pass
@@ -141,14 +142,17 @@ def _start_chrome(proxy: str = ""):
         opts.add_argument(f"--proxy-server={proxy}")
         log.info("Using proxy: %s", proxy)
 
-    _CHROME_CANDIDATES = [
-        "/opt/google/chrome/chrome",
+    # Honour Docker env-var override first (set in docker-compose.yml)
+    _env_chrome = os.environ.get("CHROME_BIN", "")
+    _CHROME_CANDIDATES = list(filter(None, [
+        _env_chrome,                           # Docker / CI override
+        "/usr/bin/chromium",                   # Debian package (Docker image)
+        "/usr/bin/chromium-browser",           # Ubuntu alias
+        "/opt/google/chrome/chrome",           # Google Chrome deb
         "/usr/bin/google-chrome-stable",
         "/usr/bin/google-chrome",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chromium",
         "/snap/bin/chromium",
-    ]
+    ]))
     chrome_bin = chrome_ver = None
     for cp in _CHROME_CANDIDATES:
         if not os.path.exists(cp):
@@ -165,16 +169,18 @@ def _start_chrome(proxy: str = ""):
         log.info("Chrome binary: %s (v%s)", cp, chrome_ver)
         break
 
+    _env_driver = os.environ.get("CHROMEDRIVER_BIN", "")
     _home = os.path.expanduser("~")
-    _DRIVER_CANDIDATES = [
+    _DRIVER_CANDIDATES = list(filter(None, [
+        _env_driver,                                     # Docker / CI override
+        "/usr/bin/chromedriver",                         # Debian chromium-driver
         f"{_home}/.local/bin/chromedriver",
         "/usr/local/bin/chromedriver",
         "/opt/google/chrome/chromedriver",
-        "/usr/bin/chromedriver",
         "/usr/lib/chromium-browser/chromedriver",
         "/usr/lib/chromium/chromedriver",
         "/snap/bin/chromedriver",
-    ]
+    ]))
     for dp in _DRIVER_CANDIDATES:
         if not os.path.exists(dp):
             continue
@@ -520,19 +526,14 @@ def load_session(
 
 def validate_session(session: requests.Session, tan: str) -> bool:
     """
-    Lightweight liveness check via the extendSession endpoint.
-    Returns True only when the portal confirms the session is still active.
+    Check if the session is still valid via the dashboard endpoint.
     """
     try:
-        url = API_BASE + "/loginapi/auth/extendSession"
-        r   = session.post(url, json={"userId": tan}, timeout=15)
+        url = API_BASE + "/loginapi/auth/dashboard"
+        r   = session.get(url, timeout=10)
         if r.status_code == 200:
-            body = {}
-            try:
-                body = r.json()
-            except Exception:
-                pass
-            if body.get("successFlag") or body.get("messages"):
+            body = r.json()
+            if body.get("successFlag"):
                 log.info("Session validation: OK")
                 return True
         log.info("Session validation: FAILED (HTTP %s)", r.status_code)

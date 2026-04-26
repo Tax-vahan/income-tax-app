@@ -191,8 +191,9 @@ def run_fetch(cfg_override: dict | None = None) -> tuple:
             log.info("Browser closed")
 
     if not enriched:
-        log.warning("No challans returned — nothing to write")
-        return None, 0, 0
+        log.warning("No challans found in the specified period.")
+        # Proceed to write an empty excel so the user gets a file with run info
+
 
     # ── [4] Write outputs ──────────────────────────────────────────────
     log.info("[4/4] Writing output files ...")

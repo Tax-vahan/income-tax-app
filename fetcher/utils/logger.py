@@ -14,6 +14,7 @@ In every other module (zero setup needed — just get the shared logger):
     log = logging.getLogger("TDS")
 """
 
+import os
 import sys
 import logging
 from pathlib import Path
@@ -25,7 +26,7 @@ _DEFAULT_DT  = "%H:%M:%S"
 
 def setup(
     level:    int  = logging.INFO,
-    log_file: str  = "tds_fetcher.log",
+    log_file: str  = None,
     to_file:  bool = True,
 ) -> logging.Logger:
     """
@@ -46,11 +47,18 @@ def setup(
     sh.setFormatter(fmt)
     logger.addHandler(sh)
 
-    # file (resolve relative to the caller's cwd)
+    # file (resolve relative to the caller's cwd or DATA_DIR)
     if to_file:
+        if log_file is None:
+            # Default to DATA_DIR/tds_fetcher.log
+            data_dir = os.environ.get("DATA_DIR", ".")
+            log_path = Path(data_dir) / "tds_fetcher.log"
+        else:
+            log_path = Path(log_file)
+
         try:
             fh = logging.FileHandler(
-                Path(log_file).resolve(), encoding="utf-8"
+                log_path.resolve(), encoding="utf-8"
             )
             fh.setFormatter(fmt)
             logger.addHandler(fh)

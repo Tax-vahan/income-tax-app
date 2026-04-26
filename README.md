@@ -27,7 +27,10 @@ fetcher/
 └── utils/
     ├── config.py             # CONFIG dict + shared constants
     └── logger.py             # Centralised structured logging
+
+data/                         # Mounted volume for persistent state (jobs.json, logs, session)
 ```
+
 
 ---
 

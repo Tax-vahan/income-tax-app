@@ -11,10 +11,15 @@ from pydantic import BaseModel
 from fetcher.main import run_fetch
 
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+# In Docker:  DATA_DIR=/app/data (mounted volume)
+# Locally:    DATA_DIR=./data   (auto-created)
+DATA_DIR      = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
-JOBS_FILE     = os.path.join(BASE_DIR, "jobs.json")
+JOBS_FILE     = os.path.join(DATA_DIR, "jobs.json")
 
+os.makedirs(DATA_DIR,      exist_ok=True)
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+
 
 app = FastAPI(title="TDS Challan API", version="6.0")
 

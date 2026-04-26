@@ -67,25 +67,39 @@ def fetch_payment_history(
 @with_retry(max_retries=CONFIG["RETRY_COUNT"], base_delay=1.0)
 def fetch_challan_detail(
     session: requests.Session,
-    crn:     str,
+    summary: dict,
     tan:     str,
 ) -> dict:
     """
     Full detail for a single challan (copychallan endpoint).
-    Response shape: {successFlag, formData: {basicTax, interest, penalty, ...}}
     """
     url = API_BASE + "/paymentapi/auth/challan/copychallan"
+    crn = summary.get("crn") or summary.get("cin", "")[:14]
+    
     payload = {
-        "header": {"formName": "PO-03-PYMNT"},
+        "header": {"formName": None},
         "formData": {
             "crn":              crn,
             "pan":              tan,
-            "actType":          "O",
+            "itnsNum":          summary.get("itnsNum") or "281",
+            "assessmentYear":   summary.get("assessmentYear") or summary.get("assmentYear") or "",
+            "majorHead":        summary.get("majorHead") or "",
+            "minorHead":        summary.get("minorHead") or "",
+            "majorSlNum":       summary.get("majorSlNum") or summary.get("majorSlNo") or "",
+            "minorSlNum":       summary.get("minorSlNum") or summary.get("minorSlNo") or "",
+            "totalAmt":         int(float(summary.get("totalAmt") or 0)),
+            "tileId":           summary.get("tileId") or "",
+
+            "actType":          summary.get("actType") or "O",
             "loggedInUserID":   tan,
             "loggedInUserType": "TDS",
         },
     }
+
+
     return _post(session, url, payload, timeout=CONFIG["TIMEOUT"])
+
+
 
 
 def extend_session(session: requests.Session, tan: str) -> bool:

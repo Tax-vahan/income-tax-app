@@ -2,9 +2,14 @@
 Shared constants and runtime configuration.
 Edit CONFIG before running, or pass overrides to run_fetch().
 """
+import os
 
 BASE     = "https://eportal.incometax.gov.in"
 API_BASE = BASE + "/iec"
+
+# Runtime data directory — /app/data in Docker (mounted volume), ./data locally
+_DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "data"))
+os.makedirs(_DATA_DIR, exist_ok=True)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -41,6 +46,6 @@ CONFIG = {
     "PROXY":        "",      # e.g. "socks5://127.0.0.1:1080"
 
     # ── Session reuse ─────────────────────────────────────────────────
-    "SESSION_FILE": "tds_session.json",
+    "SESSION_FILE": os.path.join(_DATA_DIR, "tds_session.json"),
     "SESSION_TTL":  3600,    # seconds before saved session expires
 }
