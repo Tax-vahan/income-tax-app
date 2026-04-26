@@ -1,3 +1,9 @@
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+# income-tax-app
+=======
+>>>>>>> temp-fix
 # TDS Challan Fetcher API
 
 A production-grade service that fetches TDS Challan data from the Income Tax Department (ITD) portal using Selenium + Chrome DevTools Protocol (CDP) + `requests.Session`.
@@ -123,3 +129,7 @@ Edit `fetcher/utils/config.py` or pass overrides via CLI flags / `cfg_override` 
 - Google Chrome stable
 - ChromeDriver (matching Chrome version)
 - See `requirements.txt`
+<<<<<<< HEAD
+=======
+>>>>>>> 2bdabdf (Fixed the fetcher.py file)
+>>>>>>> temp-fix
