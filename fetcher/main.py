@@ -28,6 +28,7 @@ import time
 from .utils.config              import CONFIG
 from .utils.logger              import setup as _setup_logging
 from .core                      import auth
+from .core.api                  import fetch_entity_profile
 from .services                  import challan_service, excel_service
 
 # ── Logging (configured once at import time) ──────────────────────────────────
@@ -143,6 +144,41 @@ def _scrape_dom(driver) -> list:
     return all_items
 
 
+# ── Entity profile helper ─────────────────────────────────────────────────────
+
+_EPOCH_FIELDS = (
+    "createdTmstmp", "lastUpdatedTmstmp", "lastLoginTmstmp",
+    "lastLogoutTmstmp", "tanAllotDt", "contactDob",
+)
+
+
+def _save_entity_profile(profile: dict, cfg: dict) -> None:
+    """
+    Normalise epoch-ms timestamps to ISO strings, then write the profile
+    to  data/<TAN>_entity_profile.json  (same data dir as the session file).
+    """
+    from datetime import datetime, timezone
+    import os
+
+    out = profile.copy()
+    for field in _EPOCH_FIELDS:
+        v = out.get(field)
+        if v is not None:
+            try:
+                out[field] = datetime.fromtimestamp(
+                    float(v) / 1000, tz=timezone.utc
+                ).strftime("%d/%m/%Y %H:%M:%S UTC")
+            except Exception:
+                pass
+
+    data_dir  = os.path.dirname(cfg.get("SESSION_FILE", "data/s.json"))
+    json_path = os.path.join(data_dir, f"{cfg['TAN']}_entity_profile.json")
+    os.makedirs(data_dir, exist_ok=True)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=2, default=str)
+    log.info("Entity profile saved → %s", json_path)
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def run_fetch(cfg_override: dict | None = None) -> tuple:
@@ -172,6 +208,21 @@ def run_fetch(cfg_override: dict | None = None) -> tuple:
     session, driver, cdp_capture = auth.get_session(cfg)
     if session is None:
         raise Exception("Session establishment failed")
+
+    # ── [1b] Entity profile ───────────────────────────────────────────
+    # The portal calls /saveEntity when the dashboard loads.  If CDP was
+    # running during that load, the response body is already cached — read
+    # it directly instead of making a new (potentially 403-ing) API call.
+    try:
+        profile = None
+        if cdp_capture is not None and driver is not None:
+            profile = cdp_capture.get_response_body("/saveEntity", driver, timeout=5)
+        if profile is None:
+            profile = fetch_entity_profile(session, cfg["TAN"])
+        if profile:
+            _save_entity_profile(profile, cfg)
+    except Exception as exc:
+        log.warning("Entity profile fetch failed (non-fatal): %s", exc)
 
     try:
         # ── [2+3] Challan list + parallel detail fetch ─────────────────

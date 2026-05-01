@@ -88,6 +88,224 @@ def _parse_challan_list(data: dict) -> tuple[Optional[list], int]:
     return None, 0
 
 
+# ── Browser-based detail fetch (fallback when API rejects payload) ────────────
+
+_CLOSE_MODAL_JS = """
+['button[aria-label="Close"]', '.mat-dialog-close', 'button.close',
+ '.close-icon button', 'mat-icon[role="button"]', '.mat-mdc-dialog-close'
+].forEach(function(s){
+    var el = document.querySelector(s);
+    if (el) el.click();
+});
+"""
+
+_DEBUG_ROW_JS = """
+// Return the HTML structure of first visible row for debugging
+var centerRow = document.querySelector('.ag-center-cols-container div[role="row"]');
+var rightRow  = document.querySelector('.ag-pinned-right-cols-container div[role="row"]');
+if (!centerRow) return {error: 'no rows'};
+return {
+    centerCols: Array.from(centerRow.querySelectorAll('.ag-cell')).map(function(c){
+        return {
+            colId: c.getAttribute('col-id'),
+            text: c.innerText.trim().slice(0,30),
+            buttons: Array.from(c.querySelectorAll('button,a')).map(function(b){
+                return b.tagName + ':' + (b.title||b.innerText||b.className).slice(0,40);
+            })
+        };
+    }),
+    rightColsHtml: rightRow ? rightRow.innerHTML.slice(0,600) : 'none'
+};
+"""
+
+# Try to set page size to 25 so more rows are visible at once
+_SET_PAGE_SIZE_JS = """
+var selectors = [
+    'select.ag-paging-page-size',
+    '.ag-paging-page-size select',
+    'select[aria-label*="page" i]'
+];
+for (var sel of selectors) {
+    var el = document.querySelector(sel);
+    if (!el) continue;
+    var opts = Array.from(el.options).map(function(o){ return parseInt(o.value)||0; });
+    var best = opts.filter(function(v){ return v >= 20; });
+    if (best.length) {
+        el.value = Math.min.apply(null, best);
+        el.dispatchEvent(new Event('change', {bubbles:true}));
+        return 'set to ' + el.value;
+    }
+}
+// Also try Angular Material select
+var mats = document.querySelectorAll('mat-select[aria-label*="page" i], mat-select');
+for (var mat of mats) {
+    mat.click();
+    return 'mat_clicked';
+}
+return 'no_selector';
+"""
+
+_CLICK_NEXT_PAGE_JS = """
+var btns = Array.from(document.querySelectorAll('button'));
+var next = btns.find(function(b){
+    return (b.getAttribute('aria-label') || '').toLowerCase().indexOf('next') !== -1 ||
+           b.innerText.trim() === '>' || b.classList.contains('ag-paging-next-button') ||
+           (b.querySelector('i.fa-angle-right') !== null);
+});
+if (next && !next.disabled && !next.classList.contains('ag-disabled')) {
+    next.click(); return true;
+}
+return false;
+"""
+
+_FIND_AND_CLICK_CHALLAN_JS = """
+var crn = arguments[0];
+var cin = arguments[1];
+
+var centerRows = Array.from(document.querySelectorAll(
+    '.ag-center-cols-container div[role="row"]'
+));
+var rightRows = Array.from(document.querySelectorAll(
+    '.ag-pinned-right-cols-container div[role="row"]'
+));
+
+for (var i = 0; i < centerRows.length; i++) {
+    var row = centerRows[i];
+    var txt = row.textContent;
+    var match = (crn && txt.indexOf(crn) !== -1) ||
+                (cin  && txt.indexOf(cin.slice(0,14)) !== -1);
+    if (!match) continue;
+
+    // 1. Try right-pinned action column first (most common location)
+    if (i < rightRows.length) {
+        var rBtn = rightRows[i].querySelector(
+            'button, a[role="button"], span[role="button"], mat-icon-button'
+        );
+        if (rBtn) {
+            (rBtn.closest('button') || rBtn).click();
+            return 'right_pinned';
+        }
+    }
+
+    // 2. Try clicking the CIN cell (often a link/button)
+    var cinCell = row.querySelector(
+        'div[col-id="cinNum"], div[col-id="cin"], div[col-id="challanRefNum"]'
+    );
+    if (cinCell) {
+        var cinLink = cinCell.querySelector('a, span.link, span[class*="blue"], span[class*="click"]');
+        if (cinLink) { cinLink.click(); return 'cin_link'; }
+        cinCell.click();
+        return 'cin_cell_click';
+    }
+
+    // 3. Try action col-id cells
+    var actCell = row.querySelector(
+        'div[col-id="action"] button, div[col-id="viewCopy"] button, ' +
+        'div[col-id="copy"] button, div[col-id="view"] a'
+    );
+    if (actCell) { actCell.click(); return 'action_col'; }
+
+    // 4. Last button in row (rightmost = typically action)
+    var allBtns = Array.from(row.querySelectorAll('button:not([disabled])'));
+    if (allBtns.length > 1) {
+        allBtns[allBtns.length - 1].click();
+        return 'last_btn_' + allBtns.length;
+    }
+
+    // Debug: return full col structure to help diagnose
+    return 'debug:' + Array.from(row.querySelectorAll('.ag-cell')).map(function(c){
+        var b = c.querySelector('button,a');
+        return (c.getAttribute('col-id') || '?') + (b ? '['+b.tagName+']':'');
+    }).join(',');
+}
+return 'not_found';
+"""
+
+
+def _browser_fetch_batch(driver, cdp_capture, summaries: list) -> dict:
+    """
+    Browser-based detail fetch for a batch of summaries.
+
+    Iterates through ag-Grid pages so that challans not visible on the first
+    page are still found.  Returns {crn[:14]: detail_dict} mapping.
+    """
+    results: dict = {}
+    pending: dict = {}
+    for s in summaries:
+        crn = (s.get("crn") or s.get("cin", ""))[:14]
+        if crn:
+            pending[crn] = s
+
+    if not pending:
+        return results
+
+    # Try to bump the grid's page-size dropdown so we see more rows at once.
+    try:
+        ps_result = driver.execute_script(_SET_PAGE_SIZE_JS)
+        log.info("Grid page-size adjust: %s", ps_result)
+        if ps_result not in ("no_selector", "mat_clicked"):
+            time.sleep(1.5)
+    except Exception as exc:
+        log.warning("Could not adjust grid page size: %s", exc)
+
+    # Log row structure once for debugging.
+    try:
+        debug = driver.execute_script(_DEBUG_ROW_JS)
+        log.info("Grid row structure (first row): %s", debug)
+    except Exception:
+        pass
+
+    max_pages = 20  # safety cap — 20 × 5 rows = 100 challans
+    for page_num in range(max_pages):
+        if not pending:
+            break
+
+        found_on_page: list = []
+        for crn, summary in list(pending.items()):
+            cin    = summary.get("cin", "")
+            result = driver.execute_script(_FIND_AND_CLICK_CHALLAN_JS, crn, cin)
+            log.info("Browser click CRN=%s (page %d): %s", crn, page_num + 1, result)
+
+            result_str = str(result or "")
+            if "not_found" in result_str or result_str.startswith("debug:"):
+                continue  # not on this page — try next page
+
+            # Clicked — wait for CDP to capture the copychallan response.
+            time.sleep(2)
+            detail = cdp_capture.get_response_body("/copychallan", driver, timeout=12)
+            try:
+                driver.execute_script(_CLOSE_MODAL_JS)
+            except Exception:
+                pass
+            time.sleep(0.5)
+            results[crn] = detail or {}
+            found_on_page.append(crn)
+
+        for crn in found_on_page:
+            pending.pop(crn, None)
+
+        if not pending:
+            break
+
+        # Navigate to the next grid page.
+        try:
+            has_next = driver.execute_script(_CLICK_NEXT_PAGE_JS)
+            if not has_next:
+                log.info("ag-Grid: no further pages after page %d", page_num + 1)
+                break
+            log.info("ag-Grid: moved to page %d", page_num + 2)
+            time.sleep(1.5)
+        except Exception as exc:
+            log.warning("Next-page navigation failed: %s", exc)
+            break
+
+    for crn in pending:
+        log.warning("Browser: CRN=%s not found on any grid page", crn)
+        results[crn] = {}
+
+    return results
+
+
 # ── Thread-isolated detail fetch ──────────────────────────────────────────────
 
 def _fetch_detail_safe(session, summary: dict, tan: str) -> dict:
@@ -266,6 +484,9 @@ def run(
         detail_total, len(all_challans), len(enriched),
     )
 
+    # Track summaries that still need detail after API phase
+    api_failed: list = []
+
     for batch_start in range(0, detail_total, batch_size):
         batch          = jobs_to_run[batch_start:batch_start + batch_size]
         actual_workers = min(workers, len(batch))
@@ -275,7 +496,7 @@ def run(
 
             for summary in batch:
                 if cb.is_tripped():
-                    enriched.append(enrich(summary, {}))
+                    api_failed.append(summary)
                     continue
                 fut = pool.submit(
                     _fetch_detail_safe, session, summary, tan
@@ -287,7 +508,13 @@ def run(
                 crn     = summary["crn"]
                 try:
                     detail = fut.result()
-                    if detail and detail.get("successFlag"):
+                    has_data = bool(detail and (
+                        detail.get("successFlag")
+                        or detail.get("challanNum")
+                        or detail.get("bsrCode")
+                        or detail.get("basicTax") is not None
+                    ))
+                    if has_data:
                         cb.record_success()
                         detail_success += 1
                         log.info(
@@ -298,11 +525,38 @@ def run(
                     else:
                         cb.record_failure()
                         log.warning("  Detail EMPTY  CRN=%s", crn)
-                        enriched.append(enrich(summary, {}))
+                        api_failed.append(summary)
                 except Exception as exc:
                     cb.record_failure()
                     log.error("  Detail ERROR  CRN=%s: %s", crn, exc)
-                    enriched.append(enrich(summary, {}))
+                    api_failed.append(summary)
+
+    # ── Browser-based fallback (when API rejected all requests) ───────
+    if api_failed and driver is not None and cdp_capture is not None:
+        log.info(
+            "[3b/4] Browser-based detail fetch for %d failed challans ...",
+            len(api_failed),
+        )
+        browser_results = _browser_fetch_batch(driver, cdp_capture, api_failed)
+        for summary in api_failed:
+            crn    = (summary.get("crn") or summary.get("cin", ""))[:14]
+            detail = browser_results.get(crn, {})
+            has_data = bool(detail and (
+                detail.get("successFlag")
+                or detail.get("challanNum")
+                or detail.get("bsrCode")
+            ))
+            if has_data:
+                detail_success += 1
+                log.info("  Browser detail OK  CRN=%s", crn)
+                enriched.append(enrich(summary, detail))
+            else:
+                log.warning("  Browser detail EMPTY  CRN=%s", crn)
+                enriched.append(enrich(summary, {}))
+    else:
+        # No browser available or no failures — just enrich with empty detail
+        for summary in api_failed:
+            enriched.append(enrich(summary, {}))
 
     # ── Observability stats ────────────────────────────────────────────
     duration     = round(time.time() - t0, 2)

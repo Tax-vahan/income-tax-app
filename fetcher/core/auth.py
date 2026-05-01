@@ -573,12 +573,14 @@ def get_session(cfg: dict) -> Tuple:
     if driver is None:
         return None, None, None
 
+    # Start CDP before dashboard so Angular's saveEntity / other profile
+    # API calls are captured during the initial page load.
+    log.info("Starting CDP capture ...")
+    cdp_capture.start()
+
     log.info("Navigating to dashboard ...")
     driver.get(BASE + "/iec/foservices/#/dashboard")
     time.sleep(5)
-
-    log.info("Starting CDP capture ...")
-    cdp_capture.start()
 
     if not open_payment_history_ui(driver):
         log.error("Payment History navigation failed")

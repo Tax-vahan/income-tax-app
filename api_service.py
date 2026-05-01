@@ -9,6 +9,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from fetcher.main import run_fetch
+from fetcher.core.api  import fetch_entity_profile
+from fetcher.core      import auth as _auth
+from fetcher.utils.config import CONFIG as _CFG
 
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 # In Docker:  DATA_DIR=/app/data (mounted volume)
@@ -68,6 +71,11 @@ class FetchRequest(BaseModel):
     to_date:   str
 
 
+class EntityRequest(BaseModel):
+    tan:      str
+    password: str
+
+
 # ── Background worker ─────────────────────────────────────────────────────────
 
 def _run_job(job_id: str, req: FetchRequest) -> None:
@@ -93,14 +101,16 @@ def _run_job(job_id: str, req: FetchRequest) -> None:
 
         try:
             path, count, grand = run_fetch(cfg)
+            entity_path = os.path.join(DATA_DIR, f"{req.tan}_entity_profile.json")
             _patch_job(
                 job_id,
                 status="completed",
                 completed_at=datetime.now().isoformat(),
                 result={
-                    "excel_file":   path,
-                    "record_count": count,
-                    "grand_total":  grand,
+                    "excel_file":          path,
+                    "record_count":        count,
+                    "grand_total":         grand,
+                    "entity_profile_file": entity_path if os.path.exists(entity_path) else None,
                 },
             )
             logger.info("Job %s done: %d records, total %s",
@@ -156,6 +166,113 @@ async def download_result(job_id: str):
 @app.get("/tds/api/v1/jobs")
 async def list_jobs():
     return list(jobs.values())
+
+
+@app.post("/tds/api/v1/entity")
+async def fetch_entity(req: EntityRequest, background_tasks: BackgroundTasks):
+    """
+    Fetch the deductor entity profile from the ITD portal and return it.
+
+    Flow
+    ----
+    1. Reuse a saved session if one exists for the TAN (fast — no Selenium).
+    2. Otherwise start a fresh Selenium login (takes ~30-60 s).
+    3. Call /servicesapi/auth/saveEntity and return the profile as JSON.
+
+    The profile is also written to  data/<TAN>_entity_profile.json  on disk
+    so that GET /tds/api/v1/entity/{tan} can serve it without re-fetching.
+    """
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {
+            "id":         job_id,
+            "tan":        req.tan,
+            "type":       "entity",
+            "status":     "pending",
+            "created_at": datetime.now().isoformat(),
+        }
+    _save_jobs()
+    background_tasks.add_task(_run_entity_job, job_id, req)
+    return {"job_id": job_id, "status": "pending"}
+
+
+def _run_entity_job(job_id: str, req: EntityRequest) -> None:
+    logger.info("Entity job %s started for TAN %s", job_id, req.tan)
+    with _sem:
+        _patch_job(job_id, status="running",
+                   started_at=datetime.now().isoformat())
+        cfg = {
+            **_CFG,
+            "TAN":      req.tan,
+            "PASSWORD": req.password,
+        }
+        try:
+            session, driver, cdp_capture = _auth.get_session(cfg)
+            if session is None:
+                raise RuntimeError("Session establishment failed")
+
+            from fetcher.main import _save_entity_profile
+
+            # Prefer the CDP-captured body from dashboard load (no 403 risk).
+            # Fall back to a direct API call if CDP didn't capture it.
+            profile = None
+            if cdp_capture is not None and driver is not None:
+                profile = cdp_capture.get_response_body(
+                    "/saveEntity", driver, timeout=10
+                )
+            if profile is None:
+                profile = fetch_entity_profile(session, req.tan)
+            if profile is None:
+                raise RuntimeError("Could not retrieve entity profile via CDP or API")
+
+            _save_entity_profile(profile, cfg)
+
+            if cdp_capture:
+                cdp_capture.stop()
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+
+            profile_path = os.path.join(DATA_DIR, f"{req.tan}_entity_profile.json")
+            _patch_job(
+                job_id,
+                status="completed",
+                completed_at=datetime.now().isoformat(),
+                result={"entity_profile_file": profile_path},
+            )
+            logger.info("Entity job %s done — %s", job_id, profile_path)
+        except Exception:
+            logger.exception("Entity job %s failed", job_id)
+            _patch_job(job_id, status="failed",
+                       completed_at=datetime.now().isoformat())
+
+
+@app.get("/tds/api/v1/entity/{tan}")
+async def get_entity_profile(tan: str):
+    """
+    Return the cached entity profile for a TAN.
+
+    The profile is written to disk automatically whenever a fetch job
+    (POST /tds/api/v1/fetch) or an entity job (POST /tds/api/v1/entity)
+    completes for this TAN.
+    """
+    profile_path = os.path.join(DATA_DIR, f"{tan}_entity_profile.json")
+    if not os.path.exists(profile_path):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No entity profile found for TAN {tan}. "
+                "Run POST /tds/api/v1/entity or POST /tds/api/v1/fetch first."
+            ),
+        )
+    try:
+        with open(profile_path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"Failed to read profile: {exc}")
 
 
 @app.get("/tds/api/health")

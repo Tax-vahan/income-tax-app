@@ -18,14 +18,10 @@ log = logging.getLogger("TDS")
 
 def needs_detail_fetch(item: dict) -> bool:
     """
-    Return True if the summary record is missing any key tax breakdown field.
-    Avoids calling copychallan when the list API already returned full data.
+    Return True if the summary record is missing BSR code or challan number.
+    The paymenthistory list API never returns these — detail is always needed.
     """
-    return not all([
-        item.get("basicTax"),
-        item.get("interest"),
-        item.get("penalty"),
-    ])
+    return not (item.get("bsrCode") and item.get("challanNum"))
 
 
 # ── Date parsing helpers ───────────────────────────────────────────────────────
@@ -243,11 +239,10 @@ def enrich(summary: dict, detail: dict) -> dict:
                 # But some CINs use YYMMDD. Let's be cautious.
                 pass 
         
-    # User specifically wants 'challanNum' (e.g. 00123) not CRN
+    # challanNum (5-digit bank serial, e.g. "00123") must NOT be confused with CRN.
+    # If it wasn't populated from copychallan or alternateCin above, leave blank.
     if not m.get("challanNum"):
-        # If we have a detail 'challanNum', it's already in 'm' via the merge loop.
-        # If not, try to fallback to 'brn' or 'challanNo'
-        m["challanNum"] = m.get("brn") or m.get("challanNo") or m.get("crn", "")
+        m["challanNum"] = m.get("challanNo") or ""
 
 
     if not m.get("paymentDt"):
@@ -256,11 +251,14 @@ def enrich(summary: dict, detail: dict) -> dict:
     # ── Coerce monetary fields to integers ─────────────────────────────
     for field in ("basicTax", "surCharge", "eduCess",
                   "interest", "penalty", "others"):
-        v = m.get(field, "")
-        try:
-            m[field] = int(float(v)) if v else ""
-        except (ValueError, TypeError):
-            m[field] = ""
+        v = m.get(field)
+        if v is None or v == "":
+            m[field] = 0
+        else:
+            try:
+                m[field] = int(float(v))
+            except (ValueError, TypeError):
+                m[field] = 0
 
     v_tot = m.get("totalAmt") or m.get("totalAmount") or m.get("amount") or 0
     try:

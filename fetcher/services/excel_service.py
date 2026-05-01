@@ -194,13 +194,18 @@ def _month_sheet(wb, challans):
 
     agg = defaultdict(lambda: {"count": 0, "total": 0, "_dt": datetime.min})
     for ch in challans:
-        pt = ch.get("paymentTime") or ch.get("paymentDt") or ""
-        try:
-            dt  = datetime.strptime(pt[:11].strip(), "%d-%b-%Y")
-            key = dt.strftime("%b-%Y")
-        except Exception:
-            dt  = datetime.min
-            key = "Unknown"
+        pt  = ch.get("paymentTime") or ch.get("paymentDt") or ""
+        dt  = None
+        key = "Unknown"
+        for fmt, slen in (("%d-%b-%Y", 11), ("%d/%m/%Y", 10), ("%d-%m-%Y", 10)):
+            try:
+                dt  = datetime.strptime(pt[:slen].strip(), fmt)
+                key = dt.strftime("%b-%Y")
+                break
+            except Exception:
+                continue
+        if dt is None:
+            dt = datetime.min
         agg[key]["count"] += 1
         agg[key]["total"] += ch.get("totalAmt", 0) or 0
         agg[key]["_dt"]    = dt
