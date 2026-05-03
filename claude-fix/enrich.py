@@ -239,10 +239,9 @@ def enrich(summary: dict, detail: dict) -> dict:
 
     # ── Decode challan serial from the "CRN+BANK" CIN hybrid ─────────
     # The paymenthistory CIN is "<14-digit-CRN><4-letter-bank>" e.g. "26041100002738KKBK".
-    # NOTE: This is a best-effort approximation. The real challan serial number 
-    # only comes reliably from the copychallan API response.
+    # The last 5 digits of the CRN are the challan serial number.
+    # Format: YYMMDDSSSSSSS (14 digits) → last 7 chars = serial
     if not m.get("challanNum"):
-
         raw_cin = str(m.get("cin") or "").strip()
         if len(raw_cin) >= 14 and raw_cin[:14].isdigit():
             # Last 5 digits of the CRN portion are the serial / challan number

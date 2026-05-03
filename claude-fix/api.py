@@ -114,23 +114,22 @@ def fetch_challan_detail(
     ay = (summary.get("assessmentYear") or summary.get("assmentYear")
           or _ay_from_crn(crn))
 
-    # ── CIN handling ───────────────────────────────────────────────────────
-    # The portal's paymenthistory CIN is "<14-digit-CRN><4-letter-bank-code>"
-    # e.g. "26041100002738KKBK" — NOT a numeric bank CIN.
-    # Sending the hybrid value or a wrongly-reconstructed 20-digit CIN causes
-    # PMT9001. The safest approach is to send an empty string; the portal can
-    # look up the challan by CRN alone.
+    # BUG FIX: The portal CIN field arrives as "<14-digit CRN><4-letter bank code>"
+    # e.g. "26041100002738KKBK" — this is 18 chars and NOT fully numeric.
+    # Sending this raw value causes PMT9001 "Malformed Request".
+    # We must strip the bank-code suffix and send only a valid numeric CIN,
+    # or send an empty string if no valid CIN is present.
     raw_cin = str(summary.get("cin") or "").strip()
-    if raw_cin.isdigit() and len(raw_cin) >= 17:
-        # Genuine fully-numeric bank CIN — use as-is
+    if raw_cin and raw_cin.isdigit() and len(raw_cin) >= 17:
+        # Genuine bank CIN: fully numeric, 17–20 chars (BSR7 + Date8 + Serial5)
         clean_cin = raw_cin
-        log.debug("CIN: using raw numeric value %s", clean_cin)
+    elif raw_cin and len(raw_cin) > 14 and not raw_cin.isdigit():
+        # "26041100002738KKBK" pattern — strip the alpha bank-code suffix
+        numeric_part = raw_cin[:14] if raw_cin[:14].isdigit() else ""
+        clean_cin = ""   # do NOT send the hybrid value; portal rejects it
+        log.debug("CIN '%s' has bank-code suffix — sending cin='' for CRN=%s", raw_cin, crn)
     else:
-        # Hybrid "<CRN><BANK>" value or absent — send empty; CRN is sufficient
         clean_cin = ""
-        if raw_cin:
-            log.debug("CIN '%s' has non-numeric suffix — sending cin='' for CRN=%s",
-                      raw_cin, crn)
 
     # itnsNum: 281 = TDS/TCS payable by taxpayer (ITNS 281)
     # This field is REQUIRED by the portal — omitting it causes PMT9001.

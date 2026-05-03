@@ -113,6 +113,11 @@ class CDPCapture:
                         "postData":  req.get("postData", ""),
                         "requestId": params.get("requestId", ""),
                     })
+                    try:
+                        with open("cdp_dump.txt", "a") as f:
+                            f.write(url + "\n" + str(req.get("postData", "")) + "\n\n")
+                    except Exception:
+                        pass
                 log.info("CDP captured: %s", url)
 
             elif method in ("Network.loadingFinished",

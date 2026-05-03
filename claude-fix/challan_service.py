@@ -217,8 +217,7 @@ if (globalTarget) {
 return 'not_found';
 """
 
-_SCRAPE_VIEW_DETAILS_JS = r"""
-
+_SCRAPE_VIEW_DETAILS_JS = """
 var data = {successFlag: true};
 var labels = document.querySelectorAll('label, .mat-label, .details-label');
 labels.forEach(function(l) {
@@ -294,9 +293,6 @@ def _browser_fetch_batch(driver, cdp_capture, summaries: list) -> dict:
 
     Returns {crn_14_digits: detail_dict} mapping.
     """
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-
     results: dict = {}
     pending: dict = {}
     for s in summaries:
@@ -307,123 +303,40 @@ def _browser_fetch_batch(driver, cdp_capture, summaries: list) -> dict:
     if not pending:
         return results
 
-    epay_url = "https://eportal.incometax.gov.in/iec/foservices/#/e-pay-tax"
-
-    _GRID_HAS_ROWS_JS = (
-        "return document.querySelectorAll("
-        "  '.ag-center-cols-container div[role=\"row\"]').length > 0;"
-    )
-
-    def _wait_for_grid_rows(timeout: int = 25) -> bool:
-        """Wait for ag-Grid rows to appear. Returns True on success."""
-        W = WebDriverWait(driver, timeout)
-        try:
-            W.until(lambda d: d.execute_script(_GRID_HAS_ROWS_JS))
-            # Remove any CDK overlay that blocks row interaction
-            driver.execute_script(
-                "document.querySelectorAll('.cdk-overlay-container,"
-                ".cdk-overlay-backdrop,.mat-dialog-container,"
-                ".mat-mdc-dialog-container').forEach(function(n){n.remove();});"
-            )
-            return True
-        except Exception:
-            return False
-
-    def _click_history_tab() -> bool:
-        """Click the Payment History tab. Returns True if found and clicked."""
-        W = WebDriverWait(driver, 15)
-        try:
-            tab = W.until(EC.element_to_be_clickable(
-                (By.XPATH,
-                 "//div[@role='tab']//span[contains(text(),'Payment History')]")
-            ))
-            driver.execute_script("arguments[0].click();", tab)
-            return True
-        except Exception:
-            pass
-        for el in driver.find_elements(
-                By.XPATH, "//span[contains(text(),'Payment History')]"):
+    # ── Ensure Payment History tab is visible and grid is loaded ─────────
+    try:
+        log.info("Browser fetch: dismissing popups and loading grid ...")
+        driver.execute_script(_CLOSE_MODAL_JS)
+        time.sleep(1)
+        tabs = driver.find_elements(By.XPATH,
+            "//span[contains(text(),'Payment History')] | "
+            "//div[contains(text(),'Payment History')] | "
+            "//a[contains(text(),'Payment History')]"
+        )
+        for t in tabs:
             try:
-                driver.execute_script("arguments[0].click();", el)
-                return True
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", t)
+                t.click()
+                time.sleep(4)
+                break
             except Exception:
                 pass
-        return False
 
-    def _reload_payment_history(target_page: int = 0) -> bool:
-        """
-        Navigate to e-pay-tax, handle the Act-selection dialog, click Payment
-        History tab, wait for rows, then advance to target_page (0-based).
-        Returns True when rows are visible.
-        """
-        driver.get(epay_url)
-        time.sleep(4)
-        # Handle "Select Applicable Income Tax Act" dialog if it appears
-        W = WebDriverWait(driver, 10)
-        for _ in range(2):
-            try:
-                if "Select Applicable Income Tax Act" not in driver.page_source:
-                    break
-                act_radio = W.until(EC.presence_of_element_located(
-                    (By.XPATH,
-                     "//label[contains(.,'Income-tax Act, 1961')]")
-                ))
-                driver.execute_script("arguments[0].click();", act_radio)
-                time.sleep(1)
-                cont_btn = W.until(EC.presence_of_element_located(
-                    (By.XPATH,
-                     "//button[contains(@class,'large-button-primary')"
-                     " and normalize-space()='Continue']")
-                ))
-                driver.execute_script("arguments[0].click();", cont_btn)
-                time.sleep(5)
-            except Exception as exc:
-                log.debug("Act dialog handling: %s", exc)
-                break
-
-        _click_history_tab()
-        ok = _wait_for_grid_rows(30)
-        if not ok:
-            log.warning("Grid rows never appeared after navigating to Payment History")
-
-        # Advance to target page
-        for i in range(target_page):
-            try:
-                has_next = driver.execute_script(_CLICK_NEXT_PAGE_JS)
-                if not has_next:
-                    log.warning("Ran out of pages reaching page %d", target_page + 1)
-                    break
-                time.sleep(2)
-            except Exception as exc:
-                log.warning("Page-advance error at step %d: %s", i + 1, exc)
-                break
-        return ok
-
-    # ── Initial setup: ensure grid has rows ───────────────────────────────
-    try:
-        log.info("Browser fetch: ensuring Payment History grid is loaded ...")
-        driver.execute_script(_CLOSE_MODAL_JS)
-        time.sleep(0.5)
-
-        if driver.execute_script(_GRID_HAS_ROWS_JS):
-            log.info("  Grid already loaded")
-        else:
-            log.info("  No rows yet — clicking Payment History tab ...")
-            _click_history_tab()
-            if not _wait_for_grid_rows(20):
-                log.warning("  Still no rows — falling back to full navigation ...")
-                _reload_payment_history(0)
+        # If grid still not loaded, try a full page refresh
+        cells = driver.find_elements(By.CSS_SELECTOR, "div[role='gridcell']")
+        if not cells:
+            log.warning("Grid not in DOM — refreshing page ...")
+            driver.get("https://eportal.incometax.gov.in/iec/foservices/#/e-pay-tax")
+            time.sleep(8)
+            tabs = driver.find_elements(By.XPATH,
+                "//span[contains(text(),'Payment History')] | "
+                "//div[contains(text(),'Payment History')]"
+            )
+            for t in tabs:
+                try: t.click(); time.sleep(4); break
+                except Exception: pass
     except Exception as exc:
         log.warning("Browser fetch setup failed: %s", exc)
-
-    # Try to set a larger page size so more challans fit on one page
-    try:
-        ps_result = driver.execute_script(_SET_PAGE_SIZE_JS)
-        if ps_result not in ("no_selector", None):
-            log.info("Grid page size set: %s — waiting for reload ...", ps_result)
-            time.sleep(3)
-    except Exception:
-        pass
 
     # ── Log first-row structure once for debugging ────────────────────────
     try:
@@ -460,8 +373,8 @@ viewport.scrollTop = 0;
 return 'not_found_after_scroll';
 """
 
-    grid_page = 0   # 0-based index of the currently-visible grid page
-    max_pages = 50
+    epay_url = "https://eportal.incometax.gov.in/iec/foservices/#/e-pay-tax"
+    max_pages = 30
 
     for page_num in range(max_pages):
         if not pending:
@@ -470,6 +383,11 @@ return 'not_found_after_scroll';
         found_on_page: list = []
 
         for crn, summary in list(pending.items()):
+            # The grid shows CIN = "26041100002738KKBK" — CRN is the first 14 digits
+            cin_full = str(summary.get("cin") or "").strip()
+            # Search text: use the full CIN value if available, else just the CRN
+            search_text = cin_full if cin_full else crn
+
             detail = {}
             try:
                 # ── Step 1: Scroll ag-Grid to make the target row visible ─
@@ -478,19 +396,19 @@ return 'not_found_after_scroll';
                 time.sleep(0.5)
 
                 # ── Step 2: Find the row element ──────────────────────────
+                # ag-Grid shows CIN (e.g. "26041100002738KKBK"), not raw CRN.
+                # The 14-digit CRN IS a substring of the CIN, so contains() works.
                 xpath = (
                     f"//div[contains(@class,'ag-center-cols-container')]"
                     f"//div[@role='row' and contains(.,'{crn}')]"
                 )
                 rows = driver.find_elements(By.XPATH, xpath)
                 if not rows:
-                    log.warning("  Row not in DOM for CRN=%s (page %d)",
-                                crn, grid_page + 1)
+                    log.warning("  Row not in DOM for CRN=%s (page %d)", crn, page_num + 1)
                     continue
 
                 row = rows[0]
-                driver.execute_script(
-                    "arguments[0].scrollIntoView({block:'center'});", row)
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", row)
                 time.sleep(0.3)
 
                 # ── Step 3: Click more_vert menu button in this row ───────
@@ -499,6 +417,7 @@ return 'not_found_after_scroll';
                     ".//span[normalize-space()='more_vert']]"
                 )
                 if not menu_btns:
+                    # Fallback: any button in the row's action cell
                     menu_btns = row.find_elements(By.TAG_NAME, "button")
 
                 if not menu_btns:
@@ -514,15 +433,19 @@ return 'not_found_after_scroll';
                 log.info("  Copy click result for CRN=%s: %s", crn, copy_result)
 
                 if "clicked" not in str(copy_result):
+                    # Menu may not have opened — dismiss and skip
                     driver.execute_script(_CLOSE_MODAL_JS)
                     continue
 
                 # ── Step 5: Intercept the CDP response body ───────────────
+                # The browser's Angular app just fired the real copychallan POST.
+                # That request carries correct X-XSRF-TOKEN and AuthToken headers.
+                # We steal its response body directly — bypassing our auth issues.
                 log.info("  Waiting for CDP copychallan response for CRN=%s ...", crn)
                 cdp_detail = cdp_capture.get_response_body(
                     "/copychallan", driver,
                     timeout=15,
-                    body_contains=crn,
+                    body_contains=crn,   # match only this challan's response
                 )
 
                 if cdp_detail and cdp_detail.get("successFlag"):
@@ -535,33 +458,39 @@ return 'not_found_after_scroll';
                     log.warning("  CDP copychallan empty/failed for CRN=%s: %s",
                                 crn, cdp_detail)
 
-                # ── Step 6: Handle "nature of payment" page if portal navigated ─
+                # ── Step 6: Handle the "nature of payment" page if portal navigated ─
                 time.sleep(2)
                 nav_res = driver.execute_script(_CONTINUE_IF_NATURE_PAGE_JS)
                 if "clicked" in str(nav_res):
                     log.info("  Bypassed nature-of-payment page for CRN=%s", crn)
                     time.sleep(3)
+                    # Grab any breakdown data from the Add Tax Details page as well
                     breakdown = driver.execute_script(_SCRAPE_BREAKDOWN_JS)
-                    if breakdown and not detail.get("basicTax"):
+                    if breakdown:
                         log.info("  DOM breakdown fallback for CRN=%s: tax=%s",
                                  crn, breakdown.get("basicTax"))
-                        detail.update(breakdown)
+                        # Only use DOM breakdown if CDP didn't give us the amounts
+                        if not detail.get("basicTax"):
+                            detail.update(breakdown)
 
-                # ── Step 7: Return to Payment History at the same page ────
-                # Only navigate away if the browser left the e-pay-tax page.
-                if epay_url.split("#")[0] not in driver.current_url:
-                    _reload_payment_history(grid_page)
-                else:
-                    # Still on e-pay-tax — just re-click the tab and wait
-                    _click_history_tab()
-                    _wait_for_grid_rows(20)
+                # ── Step 7: Navigate back to Payment History ──────────────
+                driver.get(epay_url)
+                time.sleep(5)
+                tabs = driver.find_elements(By.XPATH,
+                    "//span[contains(text(),'Payment History')] | "
+                    "//div[contains(text(),'Payment History')]"
+                )
+                for t in tabs:
+                    try:
+                        driver.execute_script("arguments[0].scrollIntoView();", t)
+                        t.click()
+                        time.sleep(3)
+                        break
+                    except Exception:
+                        pass
 
             except Exception as exc:
                 log.warning("  Browser extraction error CRN=%s: %s", crn, exc)
-                try:
-                    _reload_payment_history(grid_page)
-                except Exception:
-                    pass
 
             results[crn] = detail
             found_on_page.append(crn)
@@ -576,10 +505,9 @@ return 'not_found_after_scroll';
         try:
             has_next = driver.execute_script(_CLICK_NEXT_PAGE_JS)
             if not has_next:
-                log.info("ag-Grid: no further pages after page %d", grid_page + 1)
+                log.info("ag-Grid: no further pages after page %d", page_num + 1)
                 break
-            grid_page += 1
-            log.info("ag-Grid: advanced to page %d", grid_page + 1)
+            log.info("ag-Grid: advanced to page %d", page_num + 2)
             time.sleep(2)
         except Exception as exc:
             log.warning("Next-page click failed: %s", exc)
