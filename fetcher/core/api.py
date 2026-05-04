@@ -11,6 +11,7 @@ Rules
 
 import logging
 import requests
+from datetime import datetime as _dt
 
 from ..utils.config import BASE, API_BASE, CONFIG
 from .retry import with_retry
@@ -34,6 +35,12 @@ def _post(
 
 # ── Assessment-year derivation ─────────────────────────────────────────────────
 
+def _current_ay() -> str:
+    now = _dt.now()
+    y = now.year if now.month >= 4 else now.year - 1
+    return f"{y}-{str(y+1)[-2:]}"
+
+
 def _ay_from_crn(crn: str) -> str:
     """
     Derive ITD assessment year (e.g. '2026-27') from CRN prefix.
@@ -41,12 +48,12 @@ def _ay_from_crn(crn: str) -> str:
     """
     crn = str(crn or "").strip()
     if len(crn) < 2:
-        return "2026-27"
+        return _current_ay()
     try:
         yy = int(crn[0:2])
         return f"20{yy}-{yy+1}"
     except (ValueError, TypeError):
-        return "2026-27"
+        return _current_ay()
 
 
 

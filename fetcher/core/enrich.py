@@ -250,41 +250,42 @@ def enrich(summary: dict, detail: dict) -> dict:
             log.debug("challanNum extracted from CIN prefix: %s → %s",
                       raw_cin[:14], m["challanNum"])
 
-    # ── Extract BSR code from brnNum (always present in paymenthistory) ─
-    # brnNum is a 10-digit field, e.g. "0043390648".
-    # The last 7 digits are the BSR code (bank branch reference number).
-    # This is the most reliable fallback when copychallan API cannot be called.
-    if not m.get("bsrCode"):
-        brn = str(m.get("brnNum") or "").strip()
-        if brn.isdigit() and len(brn) >= 7:
-            m["bsrCode"] = brn[-7:]
-            log.debug("BSR extracted from brnNum=%s → bsrCode=%s", brn, m["bsrCode"])
-
     # ── Decode from alternateCin (Standard Bank CIN) ──────────────────
+    # Standard Bank CIN format: BSR(7) + Date(DDMMYYYY)(8) + Serial(5) = 20 chars
+    # This is the most reliable source for BSR code.
     acin = str(m.get("alternateCin", "")).strip()
     if len(acin) == 20 and acin.isdigit():
         if not m.get("bsrCode"):
             m["bsrCode"]   = acin[:7]
+            log.debug("BSR extracted from alternateCin=%s → bsrCode=%s", acin, m["bsrCode"])
         if not m.get("tenderDt"):
-            # Alternate CIN format: BSR(7) + Date(DDMMYYYY)(8) + Serial(5)
             d, mo, y = acin[7:9], acin[9:11], acin[11:15]
             m["tenderDt"] = f"{d}/{mo}/{y}"
         if not m.get("challanNum"):
             m["challanNum"] = acin[15:20]
 
     # ── Decode BSR code / tender date / challan number from CIN ───────
-
     cin = str(m.get("cin", "")).strip()
     # Standard Bank CIN: BSR(7) + Date(8) + Serial(5) = 20 chars
     if len(cin) == 20 and cin.isdigit():
         if not m.get("bsrCode"):
             m["bsrCode"]   = cin[:7]
+            log.debug("BSR extracted from cin=%s → bsrCode=%s", cin, m["bsrCode"])
         if not m.get("tenderDt"):
-            # Date is usually chars 7-15 (DDMMYYYY)
             d, mo, y = cin[7:9], cin[9:11], cin[11:15]
             m["tenderDt"] = f"{d}/{mo}/{y}"
         if not m.get("challanNum"):
             m["challanNum"] = cin[15:20]
+
+    # ── Extract BSR code from brnNum (last resort) ─────────────────────
+    # Only used when neither alternateCin nor a 20-digit cin is available.
+    if not m.get("bsrCode"):
+        brn = str(m.get("brnNum") or "").strip()
+        if brn.isdigit() and len(brn) >= 7:
+            candidate = brn[-7:]
+            if candidate.isdigit():
+                m["bsrCode"] = candidate
+                log.debug("BSR extracted from brnNum=%s → bsrCode=%s", brn, m["bsrCode"])
 
 
     if not m.get("paymentDt"):

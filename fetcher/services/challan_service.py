@@ -789,7 +789,6 @@ def run(
     detail_success = 0
     cb             = CircuitBreaker(failure_threshold=0.5, min_calls=5)
     workers        = cfg.get("WORKERS", 15)
-    batch_size     = cfg.get("BATCH_SIZE", 5)
 
     log.info(
         "  Detail fetches queued: %d / %d  (%d already complete)",
@@ -799,14 +798,12 @@ def run(
     # Track summaries that still need detail after API phase
     api_failed: list = []
 
-    for batch_start in range(0, detail_total, batch_size):
-        batch          = jobs_to_run[batch_start:batch_start + batch_size]
-        actual_workers = min(workers, len(batch))
-
+    if jobs_to_run:
+        actual_workers = min(workers, detail_total)
         with ThreadPoolExecutor(max_workers=actual_workers) as pool:
             future_map: dict = {}
 
-            for summary in batch:
+            for summary in jobs_to_run:
                 if cb.is_tripped():
                     api_failed.append(summary)
                     continue
