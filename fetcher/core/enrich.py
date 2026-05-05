@@ -36,6 +36,36 @@ def needs_detail_fetch(item: dict) -> bool:
     return False
 
 
+def extract_bsr_code(data: dict) -> Optional[str]:
+    """
+    Extract the BSR code with strict 3-level priority:
+
+    1. ``bsrCode`` field — if present and exactly 7 digits.
+    2. ``alternateCin[:7]`` — if alternateCin is a 20-char all-numeric string.
+    3. ``cin[:7]``          — if cin is a 20-char all-numeric string.
+
+    Returns a 7-digit string, or ``None`` if all sources are exhausted or invalid.
+    """
+    # Priority 1: direct bsrCode
+    bsr = data.get("bsrCode")
+    if bsr and isinstance(bsr, str):
+        bsr = bsr.strip()
+        if bsr.isdigit() and len(bsr) == 7:
+            return bsr
+
+    # Priority 2: alternateCin  (format: BSR(7) + Date(8) + Serial(5) = 20 chars)
+    alt_cin = str(data.get("alternateCin") or "").strip()
+    if len(alt_cin) >= 7 and alt_cin[:7].isdigit():
+        return alt_cin[:7]
+
+    # Priority 3: cin  (only if it is the full 20-char numeric bank CIN)
+    cin = str(data.get("cin") or "").strip()
+    if len(cin) == 20 and cin.isdigit():
+        return cin[:7]
+
+    return None
+
+
 
 # ── Date parsing helpers ───────────────────────────────────────────────────────
 
@@ -212,37 +242,43 @@ def enrich(summary: dict, detail: dict) -> dict:
         if v not in (None, ""):
             m[k] = v
 
-    # ── Field alias normalisation ──────────────────────────────────────
+    # ── Field alias normalisation ──────────────────────────────────
     if not m.get("bsrCode")   and m.get("bsrCd"):
         m["bsrCode"]  = m["bsrCd"]
     if not m.get("tenderDt")  and m.get("tenderDate"):
         m["tenderDt"] = m["tenderDate"]
     if not m.get("totalAmt"):
         m["totalAmt"] = m.get("totalAmount") or m.get("amount") or 0
-    if not m.get("secCd")     and m.get("natureOfPayment"):
-        m["secCd"]    = m["natureOfPayment"]
-    if not m.get("paymentDt") and m.get("paymentDate"):
-        m["paymentDt"] = m["paymentDate"]
 
-    # ── Section Code from paymentType (always in paymenthistory summary) ─
-    # paymentType = "TDS/TCS Payable by Taxpayer(200)" → secCd = "200"
-    if not m.get("secCd"):
-        pt = str(m.get("paymentType") or m.get("sectionName") or "").strip()
+    # ── BSR code — apply correct priority (direct > alternateCin > cin) ───
+    bsr = extract_bsr_code(m)
+    if bsr:
+        m["bsrCode"] = bsr
+        log.debug("BSR code resolved: %s", bsr)
+
+    # ── Section Code / Nature of Payment normalization ────────────────
+    # We prefer natureOfPayment or secDesc (e.g. '206C') over internal codes like '6CE'.
+    val_sec = m.get("secDesc") or m.get("natureOfPayment") or m.get("secCd")
+    if val_sec:
+        m["secCd"] = str(val_sec).strip()
+
+    # ── Section Code from paymentType (fallback for summary records) ────
+    # paymentType = "TDS/TCS Payable by Taxpayer(200)" → use description if ID matches minor head
+    if m.get("secCd") in ("200", "400") or not m.get("secCd"):
+        pt = str(m.get("paymentType") or "").strip()
         if pt:
             import re as _re
-            # Extract parenthesised code: "(200)" or "(400)"
-            pm = _re.search(r'\((\d+)\)', pt)
-            if pm:
-                m["secCd"] = pm.group(1)
+            match = _re.match(r'^(.*?)\(\d+\)$', pt)
+            if match:
+                m["secCd"] = match.group(1).strip()
             else:
                 m["secCd"] = pt
 
     # ── Decode challan serial from the "CRN+BANK" CIN hybrid ─────────
     # The paymenthistory CIN is "<14-digit-CRN><4-letter-bank>" e.g. "26041100002738KKBK".
-    # NOTE: This is a best-effort approximation. The real challan serial number 
-    # only comes reliably from the copychallan API response.
+    # The last 5 digits of the CRN are the challan serial number.
+    # Format: YYMMDDSSSSSSS (14 digits) → last 7 chars = serial
     if not m.get("challanNum"):
-
         raw_cin = str(m.get("cin") or "").strip()
         if len(raw_cin) >= 14 and raw_cin[:14].isdigit():
             # Last 5 digits of the CRN portion are the serial / challan number
@@ -251,41 +287,30 @@ def enrich(summary: dict, detail: dict) -> dict:
                       raw_cin[:14], m["challanNum"])
 
     # ── Decode from alternateCin (Standard Bank CIN) ──────────────────
-    # Standard Bank CIN format: BSR(7) + Date(DDMMYYYY)(8) + Serial(5) = 20 chars
-    # This is the most reliable source for BSR code.
     acin = str(m.get("alternateCin", "")).strip()
     if len(acin) == 20 and acin.isdigit():
         if not m.get("bsrCode"):
             m["bsrCode"]   = acin[:7]
-            log.debug("BSR extracted from alternateCin=%s → bsrCode=%s", acin, m["bsrCode"])
         if not m.get("tenderDt"):
+            # Alternate CIN format: BSR(7) + Date(DDMMYYYY)(8) + Serial(5)
             d, mo, y = acin[7:9], acin[9:11], acin[11:15]
             m["tenderDt"] = f"{d}/{mo}/{y}"
         if not m.get("challanNum"):
             m["challanNum"] = acin[15:20]
 
     # ── Decode BSR code / tender date / challan number from CIN ───────
+
     cin = str(m.get("cin", "")).strip()
     # Standard Bank CIN: BSR(7) + Date(8) + Serial(5) = 20 chars
     if len(cin) == 20 and cin.isdigit():
         if not m.get("bsrCode"):
             m["bsrCode"]   = cin[:7]
-            log.debug("BSR extracted from cin=%s → bsrCode=%s", cin, m["bsrCode"])
         if not m.get("tenderDt"):
+            # Date is usually chars 7-15 (DDMMYYYY)
             d, mo, y = cin[7:9], cin[9:11], cin[11:15]
             m["tenderDt"] = f"{d}/{mo}/{y}"
         if not m.get("challanNum"):
             m["challanNum"] = cin[15:20]
-
-    # ── Extract BSR code from brnNum (last resort) ─────────────────────
-    # Only used when neither alternateCin nor a 20-digit cin is available.
-    if not m.get("bsrCode"):
-        brn = str(m.get("brnNum") or "").strip()
-        if brn.isdigit() and len(brn) >= 7:
-            candidate = brn[-7:]
-            if candidate.isdigit():
-                m["bsrCode"] = candidate
-                log.debug("BSR extracted from brnNum=%s → bsrCode=%s", brn, m["bsrCode"])
 
 
     if not m.get("paymentDt"):

@@ -380,13 +380,16 @@ def open_payment_history_ui(driver) -> bool:
         W.until(lambda d: "Select Applicable Income Tax Act" not in d.page_source)
 
         # Payment History tab
-        history_tab = W.until(EC.element_to_be_clickable(
-            (By.XPATH,
-             "//div[@role='tab']//span[contains(text(),'Payment History')]")
-        ))
-        driver.execute_script("arguments[0].click();", history_tab)
-        log.info("  Clicked Payment History tab")
-        time.sleep(3)
+        log.info("  Switching to Payment History tab ...")
+        for attempt in range(5):
+            history_tab = driver.find_element(By.XPATH, "//div[@role='tab'][.//span[contains(text(),'Payment History')]]")
+            driver.execute_script("arguments[0].click();", history_tab)
+            time.sleep(3)
+            # Check if active (Angular often adds a class like 'mat-tab-label-active' or similar)
+            if "Payment History" in driver.execute_script("return document.querySelector('.mat-mdc-tab.mdc-tab--active')?.textContent || ''"):
+                log.info("  Tab 'Payment History' is now active")
+                break
+            log.warning("  Tab switch attempt %d failed, retrying...", attempt + 1)
 
         # Destroy overlay dialogs that can block grid interactions
         driver.execute_script(
@@ -412,6 +415,7 @@ def open_payment_history_ui(driver) -> bool:
         except Exception:
             pass
         return False
+
 
 
 # ── Session building ───────────────────────────────────────────────────────────

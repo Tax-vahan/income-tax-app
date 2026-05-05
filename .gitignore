@@ -32,3 +32,9 @@ session_cache_*.json
 
 # ── Diagnostics ────────────────────────────────────────────────────────
 *.html
+cdp_dump.txt
+data/
+
+# ── Scratch / debug ────────────────────────────────────────────────────
+scratch/
+*.diff

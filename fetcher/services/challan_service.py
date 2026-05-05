@@ -18,7 +18,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
-from selenium.webdriver.common.by import By
 
 from ..core.api    import fetch_payment_history
 from ..core.api    import fetch_challan_detail as _api_fetch_detail
@@ -90,509 +89,71 @@ def _parse_challan_list(data: dict) -> tuple[Optional[list], int]:
     return None, 0
 
 
-# ── Browser-based detail fetch (fallback when API rejects payload) ────────────
-
-_CLOSE_MODAL_JS = """
-['button[aria-label="Close"]', '.mat-dialog-close', 'button.close',
- '.close-icon button', 'mat-icon[role="button"]', '.mat-mdc-dialog-close',
- '#securityReasonPopup button', '.modal-footer button'
-].forEach(function(s){
-    var el = document.querySelector(s);
-    if (el) el.click();
-});
-// Also try generic 'Ok' or 'Close' text
-Array.from(document.querySelectorAll('button')).forEach(function(b){
-    var t = b.innerText.trim().toLowerCase();
-    if (t === 'ok' || t === 'close' || t === 'dismiss') b.click();
-});
-"""
-
-_DEBUG_ROW_JS = """
-// Return the HTML structure of first visible row for debugging
-var centerRow = document.querySelector('.ag-center-cols-container div[role="row"]');
-var rightRow  = document.querySelector('.ag-pinned-right-cols-container div[role="row"]');
-if (!centerRow) return {error: 'no rows'};
-return {
-    centerCols: Array.from(centerRow.querySelectorAll('.ag-cell')).map(function(c){
-        return {
-            colId: c.getAttribute('col-id'),
-            text: c.innerText.trim().slice(0,30),
-            buttons: Array.from(c.querySelectorAll('button,a')).map(function(b){
-                return b.tagName + ':' + (b.title||b.innerText||b.className).slice(0,40);
-            })
-        };
-    }),
-    rightColsHtml: rightRow ? rightRow.innerHTML.slice(0,600) : 'none'
-};
-"""
-
-# Try to set page size to 25 so more rows are visible at once
-_SET_PAGE_SIZE_JS = """
-var selectors = [
-    'select.ag-paging-page-size',
-    '.ag-paging-page-size select',
-    'select[aria-label*="page" i]'
-];
-for (var sel of selectors) {
-    var el = document.querySelector(sel);
-    if (!el) continue;
-    var opts = Array.from(el.options).map(function(o){ return parseInt(o.value)||0; });
-    var best = opts.filter(function(v){ return v >= 20; });
-    if (best.length) {
-        el.value = Math.min.apply(null, best);
-        el.dispatchEvent(new Event('change', {bubbles:true}));
-        return 'set to ' + el.value;
-    }
-}
-// Also try Angular Material select
-var mats = document.querySelectorAll('mat-select[aria-label*="page" i], mat-select');
-for (var mat of mats) {
-    mat.click();
-    return 'mat_clicked';
-}
-return 'no_selector';
-"""
-
-_CLICK_NEXT_PAGE_JS = """
-var btns = Array.from(document.querySelectorAll('button'));
-var next = btns.find(function(b){
-    return (b.getAttribute('aria-label') || '').toLowerCase().indexOf('next') !== -1 ||
-           b.innerText.trim() === '>' || b.classList.contains('ag-paging-next-button') ||
-           (b.querySelector('i.fa-angle-right') !== null);
-});
-if (next && !next.disabled && !next.classList.contains('ag-disabled')) {
-    next.click(); return true;
-}
-return false;
-"""
-
-_FIND_ROW_AND_CLICK_MENU_JS = """
-var crn = arguments[0];
-var cin = arguments[1];
-var rows = Array.from(document.querySelectorAll('.ag-center-cols-container div[role="row"]'));
-for (var row of rows) {
-    if (row.textContent.indexOf(crn) === -1 && (!cin || row.textContent.indexOf(cin.slice(0,14)) === -1)) continue;
-    var btn = row.querySelector('button .mat-icon, button mat-icon');
-    if (!btn) btn = Array.from(row.querySelectorAll('button')).find(b => b.innerText.indexOf('more_vert') !== -1);
-    if (btn) {
-        var clickBtn = btn.closest('button') || btn;
-        clickBtn.scrollIntoView({block:'center'});
-        clickBtn.click();
-        return 'clicked_vert';
-    }
-}
-return 'not_found';
-"""
-
-_CLICK_MENU_OPTION_JS = """
-var targetText = arguments[0].toLowerCase();
-var startTime = Date.now();
-function findAndClick() {
-    var items = Array.from(document.querySelectorAll('button, [role="menuitem"], .mat-mdc-menu-item, .mat-menu-item, .mat-menu-panel button, .cdk-overlay-container button'));
-    var found = items.find(function(item) {
-        var t = (item.innerText || "").toLowerCase();
-        return t.indexOf(targetText) !== -1;
-    });
-    if (found) {
-        found.click();
-        return 'clicked:' + found.innerText.trim();
-    }
-    return null;
-}
-
-// Try once
-var res = findAndClick();
-if (res) return res;
-
-// If not found, it might be an overlay still opening. But since we are in execute_script, we can't wait easily.
-// Let's try one last global search
-var globalItems = Array.from(document.querySelectorAll('button'));
-var globalTarget = globalItems.find(function(b){
-    return b.innerText.trim().toLowerCase() === targetText;
-});
-if (globalTarget) {
-    globalTarget.click();
-    return 'clicked_global:' + globalTarget.innerText.trim();
-}
-return 'not_found';
-"""
-
-_SCRAPE_VIEW_DETAILS_JS = r"""
-
-var data = {successFlag: true};
-var labels = document.querySelectorAll('label, .mat-label, .details-label');
-labels.forEach(function(l) {
-    var txt = l.innerText.trim().toLowerCase();
-    var val = (l.nextElementSibling ? l.nextElementSibling.innerText.trim() : '');
-    if (!val) {
-        var parent = l.closest('.row') || l.parentElement;
-        var valEl = parent.querySelector('.details-value, span, b');
-        if (valEl) val = valEl.innerText.trim();
-    }
-    if (txt.indexOf('bsr code') !== -1) data.bsrCode = val;
-    if (txt.indexOf('challan number') !== -1) data.challanNum = val;
-    if (txt.indexOf('alternate cin') !== -1) data.alternateCin = val;
-    if (txt.indexOf('tender date') !== -1) data.tenderDt = val;
-});
-// Fallback: look for BSR-like 7-digit numbers if bsrCode still missing
-if (!data.bsrCode) {
-    var allText = document.body.innerText;
-    var bsrMatch = allText.match(/BSR Code[:\s]+(\d{7})/i);
-    if (bsrMatch) data.bsrCode = bsrMatch[1];
-}
-return Object.keys(data).length > 1 ? data : null;
-"""
-
-_SCRAPE_BREAKDOWN_JS = """
-var amounts = {successFlag: true};
-var fields = document.querySelectorAll('mat-form-field');
-var found = false;
-fields.forEach(function(f) {
-    var label = f.querySelector('mat-label');
-    if (!label) return;
-    var txt = label.innerText.trim().toLowerCase();
-    var input = f.querySelector('input');
-    if (!input) return;
-    var val = parseFloat(input.value.replace(/,/g, '')) || 0;
-    
-    if (txt.indexOf('basic tax') !== -1 || txt === 'tax') { amounts.basicTax = val; found = true; }
-    if (txt.indexOf('surcharge') !== -1) { amounts.surCharge = val; found = true; }
-    if (txt.indexOf('cess') !== -1) { amounts.eduCess = val; found = true; }
-    if (txt.indexOf('interest') !== -1) { amounts.interest = val; found = true; }
-    if (txt.indexOf('penalty') !== -1) { amounts.penalty = val; found = true; }
-    if (txt.indexOf('others') !== -1) { amounts.others = val; found = true; }
-});
-return found ? amounts : null;
-"""
-
-_CONTINUE_IF_NATURE_PAGE_JS = """
-if (window.location.href.indexOf('tds-payable-by-taxpayer') !== -1) {
-    var btn = Array.from(document.querySelectorAll('button')).find(function(b){
-        return b.innerText.indexOf('Continue') !== -1;
-    });
-    if (btn) { btn.click(); return 'clicked_continue'; }
-}
-return 'not_nature_page';
-"""
-
-
-def _browser_fetch_batch(driver, cdp_capture, summaries: list) -> dict:
-    """
-    Browser-based detail fetch using CDP response-body interception.
-
-    Strategy (per challan):
-      1. Scroll the ag-Grid to bring the target row into the virtualised DOM.
-      2. Click the row's more_vert menu → "Copy".
-      3. The browser fires its own authenticated copychallan API call.
-         CDP captures that request & response with the full Angular auth headers.
-      4. Call cdp_capture.get_response_body("/copychallan", body_contains=crn)
-         to steal the JSON the browser just received — no manual auth needed.
-      5. Navigate back, repeat for next challan.
-
-    This bypasses the X-XSRF-TOKEN problem entirely: the browser's own Angular
-    requests always carry the correct XSRF and AuthToken headers.
-
-    Returns {crn_14_digits: detail_dict} mapping.
-    """
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-
-    results: dict = {}
-    pending: dict = {}
-    for s in summaries:
-        crn = (s.get("crn") or str(s.get("cin", ""))[:14])
-        if crn:
-            pending[crn] = s
-
-    if not pending:
-        return results
-
-    epay_url = "https://eportal.incometax.gov.in/iec/foservices/#/e-pay-tax"
-
-    _GRID_HAS_ROWS_JS = (
-        "return document.querySelectorAll("
-        "  '.ag-center-cols-container div[role=\"row\"]').length > 0;"
-    )
-
-    def _wait_for_grid_rows(timeout: int = 25) -> bool:
-        """Wait for ag-Grid rows to appear. Returns True on success."""
-        W = WebDriverWait(driver, timeout)
-        try:
-            W.until(lambda d: d.execute_script(_GRID_HAS_ROWS_JS))
-            # Remove any CDK overlay that blocks row interaction
-            driver.execute_script(
-                "document.querySelectorAll('.cdk-overlay-container,"
-                ".cdk-overlay-backdrop,.mat-dialog-container,"
-                ".mat-mdc-dialog-container').forEach(function(n){n.remove();});"
-            )
-            return True
-        except Exception:
-            return False
-
-    def _click_history_tab() -> bool:
-        """Click the Payment History tab. Returns True if found and clicked."""
-        W = WebDriverWait(driver, 15)
-        try:
-            tab = W.until(EC.element_to_be_clickable(
-                (By.XPATH,
-                 "//div[@role='tab']//span[contains(text(),'Payment History')]")
-            ))
-            driver.execute_script("arguments[0].click();", tab)
-            return True
-        except Exception:
-            pass
-        for el in driver.find_elements(
-                By.XPATH, "//span[contains(text(),'Payment History')]"):
-            try:
-                driver.execute_script("arguments[0].click();", el)
-                return True
-            except Exception:
-                pass
-        return False
-
-    def _reload_payment_history(target_page: int = 0) -> bool:
-        """
-        Navigate to e-pay-tax, handle the Act-selection dialog, click Payment
-        History tab, wait for rows, then advance to target_page (0-based).
-        Returns True when rows are visible.
-        """
-        driver.get(epay_url)
-        time.sleep(4)
-        # Handle "Select Applicable Income Tax Act" dialog if it appears
-        W = WebDriverWait(driver, 10)
-        for _ in range(2):
-            try:
-                if "Select Applicable Income Tax Act" not in driver.page_source:
-                    break
-                act_radio = W.until(EC.presence_of_element_located(
-                    (By.XPATH,
-                     "//label[contains(.,'Income-tax Act, 1961')]")
-                ))
-                driver.execute_script("arguments[0].click();", act_radio)
-                time.sleep(1)
-                cont_btn = W.until(EC.presence_of_element_located(
-                    (By.XPATH,
-                     "//button[contains(@class,'large-button-primary')"
-                     " and normalize-space()='Continue']")
-                ))
-                driver.execute_script("arguments[0].click();", cont_btn)
-                time.sleep(5)
-            except Exception as exc:
-                log.debug("Act dialog handling: %s", exc)
-                break
-
-        _click_history_tab()
-        ok = _wait_for_grid_rows(30)
-        if not ok:
-            log.warning("Grid rows never appeared after navigating to Payment History")
-
-        # Advance to target page
-        for i in range(target_page):
-            try:
-                has_next = driver.execute_script(_CLICK_NEXT_PAGE_JS)
-                if not has_next:
-                    log.warning("Ran out of pages reaching page %d", target_page + 1)
-                    break
-                time.sleep(2)
-            except Exception as exc:
-                log.warning("Page-advance error at step %d: %s", i + 1, exc)
-                break
-        return ok
-
-    # ── Initial setup: ensure grid has rows ───────────────────────────────
-    try:
-        log.info("Browser fetch: ensuring Payment History grid is loaded ...")
-        driver.execute_script(_CLOSE_MODAL_JS)
-        time.sleep(0.5)
-
-        if driver.execute_script(_GRID_HAS_ROWS_JS):
-            log.info("  Grid already loaded")
-        else:
-            log.info("  No rows yet — clicking Payment History tab ...")
-            _click_history_tab()
-            if not _wait_for_grid_rows(20):
-                log.warning("  Still no rows — falling back to full navigation ...")
-                _reload_payment_history(0)
-    except Exception as exc:
-        log.warning("Browser fetch setup failed: %s", exc)
-
-    # Try to set a larger page size so more challans fit on one page
-    try:
-        ps_result = driver.execute_script(_SET_PAGE_SIZE_JS)
-        if ps_result not in ("no_selector", None):
-            log.info("Grid page size set: %s — waiting for reload ...", ps_result)
-            time.sleep(3)
-    except Exception:
-        pass
-
-    # ── Log first-row structure once for debugging ────────────────────────
-    try:
-        debug = driver.execute_script(_DEBUG_ROW_JS)
-        log.info("Grid first-row structure: %s", debug)
-    except Exception:
-        pass
-
-    # ── JavaScript to scroll ag-Grid to the row containing a search string ─
-    _SCROLL_ROW_INTO_VIEW_JS = """
-var searchStr = arguments[0];
-var viewport = document.querySelector('.ag-body-viewport') ||
-               document.querySelector('.ag-center-cols-viewport');
-if (!viewport) return 'no_viewport';
-// Try to find existing row first
-var rows = Array.from(document.querySelectorAll('.ag-center-cols-container div[role="row"]'));
-for (var r of rows) {
-    if (r.textContent.indexOf(searchStr) !== -1) return 'already_visible';
-}
-// Scroll down in steps to trigger virtual row rendering
-var step = viewport.clientHeight * 0.8;
-var maxScroll = viewport.scrollHeight;
-var scrollPos = 0;
-while (scrollPos < maxScroll) {
-    scrollPos += step;
-    viewport.scrollTop = scrollPos;
-    // Check if our row appeared
-    rows = Array.from(document.querySelectorAll('.ag-center-cols-container div[role="row"]'));
-    for (var r of rows) {
-        if (r.textContent.indexOf(searchStr) !== -1) return 'scrolled_found';
-    }
-}
-viewport.scrollTop = 0;
-return 'not_found_after_scroll';
-"""
-
-    grid_page = 0   # 0-based index of the currently-visible grid page
-    max_pages = 50
-
-    for page_num in range(max_pages):
-        if not pending:
-            break
-
-        found_on_page: list = []
-
-        for crn, summary in list(pending.items()):
-            detail = {}
-            try:
-                # ── Step 1: Scroll ag-Grid to make the target row visible ─
-                scroll_res = driver.execute_script(_SCROLL_ROW_INTO_VIEW_JS, crn)
-                log.info("  Scroll result for CRN=%s: %s", crn, scroll_res)
-                time.sleep(0.5)
-
-                # ── Step 2: Find the row element ──────────────────────────
-                xpath = (
-                    f"//div[contains(@class,'ag-center-cols-container')]"
-                    f"//div[@role='row' and contains(.,'{crn}')]"
-                )
-                rows = driver.find_elements(By.XPATH, xpath)
-                if not rows:
-                    log.warning("  Row not in DOM for CRN=%s (page %d)",
-                                crn, grid_page + 1)
-                    continue
-
-                row = rows[0]
-                driver.execute_script(
-                    "arguments[0].scrollIntoView({block:'center'});", row)
-                time.sleep(0.3)
-
-                # ── Step 3: Click more_vert menu button in this row ───────
-                menu_btns = row.find_elements(By.XPATH,
-                    ".//button[.//mat-icon[normalize-space()='more_vert'] or "
-                    ".//span[normalize-space()='more_vert']]"
-                )
-                if not menu_btns:
-                    menu_btns = row.find_elements(By.TAG_NAME, "button")
-
-                if not menu_btns:
-                    log.warning("  No action button in row for CRN=%s", crn)
-                    continue
-
-                driver.execute_script("arguments[0].click();", menu_btns[0])
-                log.info("  Clicked more_vert for CRN=%s", crn)
-                time.sleep(1.5)
-
-                # ── Step 4: Click 'Copy' in the dropdown menu ─────────────
-                copy_result = driver.execute_script(_CLICK_MENU_OPTION_JS, "Copy")
-                log.info("  Copy click result for CRN=%s: %s", crn, copy_result)
-
-                if "clicked" not in str(copy_result):
-                    driver.execute_script(_CLOSE_MODAL_JS)
-                    continue
-
-                # ── Step 5: Intercept the CDP response body ───────────────
-                log.info("  Waiting for CDP copychallan response for CRN=%s ...", crn)
-                cdp_detail = cdp_capture.get_response_body(
-                    "/copychallan", driver,
-                    timeout=15,
-                    body_contains=crn,
-                )
-
-                if cdp_detail and cdp_detail.get("successFlag"):
-                    log.info("  CDP copychallan OK for CRN=%s: bsr=%s challanNum=%s",
-                             crn,
-                             cdp_detail.get("bsrCode") or cdp_detail.get("bsrCd"),
-                             cdp_detail.get("challanNum"))
-                    detail.update(cdp_detail)
-                else:
-                    log.warning("  CDP copychallan empty/failed for CRN=%s: %s",
-                                crn, cdp_detail)
-
-                # ── Step 6: Handle "nature of payment" page if portal navigated ─
-                time.sleep(2)
-                nav_res = driver.execute_script(_CONTINUE_IF_NATURE_PAGE_JS)
-                if "clicked" in str(nav_res):
-                    log.info("  Bypassed nature-of-payment page for CRN=%s", crn)
-                    time.sleep(3)
-                    breakdown = driver.execute_script(_SCRAPE_BREAKDOWN_JS)
-                    if breakdown and not detail.get("basicTax"):
-                        log.info("  DOM breakdown fallback for CRN=%s: tax=%s",
-                                 crn, breakdown.get("basicTax"))
-                        detail.update(breakdown)
-
-                # ── Step 7: Return to Payment History at the same page ────
-                # Only navigate away if the browser left the e-pay-tax page.
-                if epay_url.split("#")[0] not in driver.current_url:
-                    _reload_payment_history(grid_page)
-                else:
-                    # Still on e-pay-tax — just re-click the tab and wait
-                    _click_history_tab()
-                    _wait_for_grid_rows(20)
-
-            except Exception as exc:
-                log.warning("  Browser extraction error CRN=%s: %s", crn, exc)
-                try:
-                    _reload_payment_history(grid_page)
-                except Exception:
-                    pass
-
-            results[crn] = detail
-            found_on_page.append(crn)
-
-        for crn in found_on_page:
-            pending.pop(crn, None)
-
-        if not pending:
-            break
-
-        # Advance to next grid page
-        try:
-            has_next = driver.execute_script(_CLICK_NEXT_PAGE_JS)
-            if not has_next:
-                log.info("ag-Grid: no further pages after page %d", grid_page + 1)
-                break
-            grid_page += 1
-            log.info("ag-Grid: advanced to page %d", grid_page + 1)
-            time.sleep(2)
-        except Exception as exc:
-            log.warning("Next-page click failed: %s", exc)
-            break
-
-    for crn in pending:
-        log.warning("Browser: CRN=%s not found on any grid page — giving up", crn)
-        results[crn] = {}
-
-    return results
-
 
 # ── Thread-isolated detail fetch ──────────────────────────────────────────────
+
+def _fetch_detail_parallel(
+    session,
+    summaries: list,
+    tan: str,
+    max_workers: int = 8,
+) -> tuple[dict, list]:
+    """
+    Fetch copychallan detail for every summary in *summaries* concurrently.
+
+    Returns
+    -------
+    (details, failed)
+        details : {crn: result_dict}  — only entries with successFlag or
+                  usable data (bsrCode / challanNum / basicTax)
+        failed  : list of summary dicts whose detail fetch failed / empty
+    """
+    details: dict = {}
+    failed:  list = []
+    total         = len(summaries)
+
+    log.info(
+        "Parallel detail fetch: %d challans | %d workers",
+        total, max_workers,
+    )
+    t_start = time.time()
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {
+            pool.submit(_fetch_detail_safe, session, s, tan): s
+            for s in summaries
+        }
+        done = 0
+        for fut in as_completed(future_map):
+            done += 1
+            summary = future_map[fut]
+            crn     = summary.get("crn", "?")
+            try:
+                result   = fut.result(timeout=60)
+                has_data = bool(result and (
+                    result.get("successFlag")
+                    or result.get("challanNum")
+                    or result.get("bsrCode")
+                    or result.get("basicTax") is not None
+                ))
+                if has_data:
+                    details[crn] = result
+                    log.info("✅ [%d/%d] Detail OK   CRN=%s", done, total, crn)
+                else:
+                    msg = (result.get("messages") or [{}])[0].get("desc", "empty")
+                    log.warning("⚠️ [%d/%d] Detail FAIL CRN=%s — %s", done, total, crn, msg)
+                    failed.append(summary)
+            except Exception as exc:
+                log.error("❌ [%d/%d] Detail ERR  CRN=%s — %s", done, total, crn, exc)
+                failed.append(summary)
+
+    elapsed = time.time() - t_start
+    log.info(
+        "Parallel fetch done: %d/%d succeeded in %.1f s",
+        len(details), total, elapsed,
+    )
+    return details, failed
+
 
 def _fetch_detail_safe(session, summary: dict, tan: str) -> dict:
     """Fetch one challan's detail.  Never raises so worker threads stay healthy."""
@@ -789,6 +350,7 @@ def run(
     detail_success = 0
     cb             = CircuitBreaker(failure_threshold=0.5, min_calls=5)
     workers        = cfg.get("WORKERS", 15)
+    batch_size     = cfg.get("BATCH_SIZE", 5)
 
     log.info(
         "  Detail fetches queued: %d / %d  (%d already complete)",
@@ -798,12 +360,14 @@ def run(
     # Track summaries that still need detail after API phase
     api_failed: list = []
 
-    if jobs_to_run:
-        actual_workers = min(workers, detail_total)
+    for batch_start in range(0, detail_total, batch_size):
+        batch          = jobs_to_run[batch_start:batch_start + batch_size]
+        actual_workers = min(workers, len(batch))
+
         with ThreadPoolExecutor(max_workers=actual_workers) as pool:
             future_map: dict = {}
 
-            for summary in jobs_to_run:
+            for summary in batch:
                 if cb.is_tripped():
                     api_failed.append(summary)
                     continue
@@ -840,32 +404,8 @@ def run(
                     log.error("  Detail ERROR  CRN=%s: %s", crn, exc)
                     api_failed.append(summary)
 
-    # ── Browser-based fallback (when API rejected all requests) ───────
-    if api_failed and driver is not None and cdp_capture is not None:
-        log.info(
-            "[3b/4] Browser-based detail fetch for %d failed challans ...",
-            len(api_failed),
-        )
-        browser_results = _browser_fetch_batch(driver, cdp_capture, api_failed)
-        for summary in api_failed:
-            crn    = (summary.get("crn") or summary.get("cin", ""))[:14]
-            detail = browser_results.get(crn, {})
-            has_data = bool(detail and (
-                detail.get("successFlag")
-                or detail.get("challanNum")
-                or detail.get("bsrCode")
-            ))
-            if has_data:
-                detail_success += 1
-                log.info("  Browser detail OK  CRN=%s", crn)
-                enriched.append(enrich(summary, detail))
-            else:
-                log.warning("  Browser detail EMPTY  CRN=%s", crn)
-                enriched.append(enrich(summary, {}))
-    else:
-        # No browser available or no failures — just enrich with empty detail
-        for summary in api_failed:
-            enriched.append(enrich(summary, {}))
+    for summary in api_failed:
+        enriched.append(enrich(summary, {}))
 
     # ── Observability stats ────────────────────────────────────────────
     duration     = round(time.time() - t0, 2)
