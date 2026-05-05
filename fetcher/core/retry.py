@@ -1,5 +1,5 @@
 """
-Exponential-backoff retry decorator.
+Exponential-backoff retry decorator with full jitter.
 
 Retries on:
   - HTTP 5xx  (requests.HTTPError where status >= 500)
@@ -8,18 +8,13 @@ Retries on:
 
 4xx errors are NOT retried — they indicate a caller mistake.
 
-Example
--------
-    from fetcher.core.retry import with_retry
-
-    @with_retry(max_retries=3, base_delay=1.0)
-    def call_api(session, url):
-        resp = session.post(url, ...)
-        resp.raise_for_status()
-        return resp.json()
+Jitter: each delay is randomised to [0, cap] (full-jitter strategy) so that
+multiple concurrent worker threads don't all wake up and hammer the portal at
+the same instant after a failure burst.
 """
 
 import time
+import random
 import functools
 import logging
 import requests
@@ -35,10 +30,11 @@ def with_retry(
     """
     Decorator factory.
 
-    Delay schedule with defaults (base=1 s, backoff=2):
-        attempt 1 → wait 1 s
-        attempt 2 → wait 2 s
-        attempt 3 → wait 4 s
+    Delay schedule with defaults — cap doubles each attempt, actual sleep is
+    uniform-random in [0, cap] (full jitter, prevents thundering-herd):
+        attempt 1 → cap=1 s   → sleep in [0, 1]
+        attempt 2 → cap=2 s   → sleep in [0, 2]
+        attempt 3 → cap=4 s   → sleep in [0, 4]
         attempt 4 → raise
     """
     def decorator(fn):
@@ -57,7 +53,8 @@ def with_retry(
                         raise                           # 4xx — do not retry
                     if attempt >= max_retries:
                         raise
-                    delay = base_delay * (backoff ** attempt)
+                    cap   = base_delay * (backoff ** attempt)
+                    delay = random.uniform(0, cap)
                     log.warning(
                         "HTTP %s on %s — retry %d/%d in %.1f s",
                         status, fn.__name__, attempt + 1, max_retries, delay,
@@ -69,7 +66,8 @@ def with_retry(
                     last_exc = exc
                     if attempt >= max_retries:
                         raise
-                    delay = base_delay * (backoff ** attempt)
+                    cap   = base_delay * (backoff ** attempt)
+                    delay = random.uniform(0, cap)
                     log.warning(
                         "Network error on %s — retry %d/%d in %.1f s: %s",
                         fn.__name__, attempt + 1, max_retries, delay, exc,
@@ -80,7 +78,8 @@ def with_retry(
                     last_exc = exc
                     if attempt >= max_retries:
                         raise
-                    delay = base_delay * (backoff ** attempt)
+                    cap   = base_delay * (backoff ** attempt)
+                    delay = random.uniform(0, cap)
                     log.warning(
                         "JSON parse error on %s — retry %d/%d in %.1f s: %s",
                         fn.__name__, attempt + 1, max_retries, delay, exc,

@@ -18,9 +18,9 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
-
 from ..core.api    import fetch_payment_history
 from ..core.api    import fetch_challan_detail as _api_fetch_detail
+from ..core.api    import extend_session
 from ..core.enrich import enrich, filter_by_date, needs_detail_fetch
 
 log = logging.getLogger("TDS")
@@ -348,9 +348,11 @@ def run(
 
     detail_total   = len(jobs_to_run)
     detail_success = 0
-    cb             = CircuitBreaker(failure_threshold=0.5, min_calls=5)
-    workers        = cfg.get("WORKERS", 15)
-    batch_size     = cfg.get("BATCH_SIZE", 5)
+    # Tolerant circuit breaker: only trip when 80%+ of calls fail over at least 20 samples.
+    # The portal has transient 5xx spikes; tripping too early wastes the entire batch.
+    cb             = CircuitBreaker(failure_threshold=0.80, min_calls=20)
+    workers        = cfg.get("WORKERS", 25)
+    batch_size     = cfg.get("BATCH_SIZE", 20)
 
     log.info(
         "  Detail fetches queued: %d / %d  (%d already complete)",
@@ -358,11 +360,18 @@ def run(
     )
 
     # Track summaries that still need detail after API phase
-    api_failed: list = []
+    api_failed:     list  = []
+    last_heartbeat: float = time.time()
 
     for batch_start in range(0, detail_total, batch_size):
         batch          = jobs_to_run[batch_start:batch_start + batch_size]
         actual_workers = min(workers, len(batch))
+
+        # Extend server-side session every 4 minutes to prevent portal timeout
+        now = time.time()
+        if now - last_heartbeat > 240:
+            extend_session(session, tan)
+            last_heartbeat = now
 
         with ThreadPoolExecutor(max_workers=actual_workers) as pool:
             future_map: dict = {}

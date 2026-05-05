@@ -40,21 +40,23 @@ _BB  = Border(left=_TH, right=_TH, top=_TH, bottom=_MED)
 # ── Column spec — (header, field_key, width, number_format) ──────────────────
 
 COLUMNS = [
-    ("Sr. No.",           "__sr__",     7,  None),
-    ("BSR Code",          "bsrCode",   12,  None),
-    ("Payment Date",      "paymentDt", 16,  None),
-    ("Challan No.",       "challanNum",13,  None),
-    ("Total Amount",      "totalAmt",  18,  "#,##0"),
-    ("Section Code",      "secCd",     11,  None),
-    ("Minor Head",        "minorHead", 11,  None),
-    ("CIN",               "cin",       24,  None),
-    ("Basic Tax (Rs.)",   "basicTax",  16,  "#,##0"),
-    ("Surcharge (Rs.)",   "surCharge", 14,  "#,##0"),
-    ("Edu Cess (Rs.)",    "eduCess",   13,  "#,##0"),
-    ("Interest (Rs.)",    "interest",  13,  "#,##0"),
-    ("Penalty (Rs.)",     "penalty",   13,  "#,##0"),
-    ("Others (Rs.)",      "others",    12,  "#,##0"),
-    ("Total Amt (Rs.)",   "totalAmt",  18,  "#,##0"),
+    ("Sr. No.",           "__sr__",        7,  None),
+    ("BSR Code",          "bsrCode",      12,  None),
+    ("Challan No.",       "challanNum",   13,  None),
+    ("Payment Date",      "paymentDt",    16,  None),
+    ("Financial Year",    "financialYear",14,  None),
+    ("Asst. Year",        "assessmentYear",12, None),
+    ("Section Code",      "secCd",        11,  None),
+    ("Minor Head",        "minorHead",    11,  None),
+    ("CIN",               "cin",          24,  None),
+    ("Bank",              "bankCode",      8,  None),
+    ("Basic Tax (Rs.)",   "basicTax",     16,  "#,##0"),
+    ("Surcharge (Rs.)",   "surCharge",    14,  "#,##0"),
+    ("Edu Cess (Rs.)",    "eduCess",      13,  "#,##0"),
+    ("Interest (Rs.)",    "interest",     13,  "#,##0"),
+    ("Penalty (Rs.)",     "penalty",      13,  "#,##0"),
+    ("Others (Rs.)",      "others",       12,  "#,##0"),
+    ("Total Amt (Rs.)",   "totalAmt",     18,  "#,##0"),
 ]
 
 _AMT_FIELDS = {
@@ -194,21 +196,29 @@ def _month_sheet(wb, challans):
 
     agg = defaultdict(lambda: {"count": 0, "total": 0, "_dt": datetime.min})
     for ch in challans:
-        pt  = ch.get("paymentTime") or ch.get("paymentDt") or ""
+        # Prefer the pre-computed paymentMonth field ("Apr 2026"); fall back to paymentDt parsing
+        key = ch.get("paymentMonth") or ""
         dt  = None
-        key = "Unknown"
-        for fmt, slen in (("%d-%b-%Y", 11), ("%d/%m/%Y", 10), ("%d-%m-%Y", 10)):
+        if not key:
+            pt = ch.get("paymentDt") or ""
+            for fmt, slen in (("%d/%m/%Y", 10), ("%d-%b-%Y", 11), ("%d-%m-%Y", 10)):
+                try:
+                    dt  = datetime.strptime(pt[:slen].strip(), fmt)
+                    key = dt.strftime("%b %Y")
+                    break
+                except Exception:
+                    continue
+        if not key:
+            key = "Unknown"
+        if dt is None and key != "Unknown":
             try:
-                dt  = datetime.strptime(pt[:slen].strip(), fmt)
-                key = dt.strftime("%b-%Y")
-                break
+                dt = datetime.strptime(key, "%b %Y")
             except Exception:
-                continue
-        if dt is None:
-            dt = datetime.min
+                dt = datetime.min
         agg[key]["count"] += 1
         agg[key]["total"] += ch.get("totalAmt", 0) or 0
-        agg[key]["_dt"]    = dt
+        if dt and dt > agg[key]["_dt"]:
+            agg[key]["_dt"] = dt
 
     r = 3
     for key in sorted(agg, key=lambda x: agg[x]["_dt"]):

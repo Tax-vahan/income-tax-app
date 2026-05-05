@@ -31,21 +31,21 @@ CONFIG = {
 
     # ── Fetch tuning ─────────────────────────────────────────────────
     "PAGE_SIZE":    10000,   # challans per API page
-    "TIMEOUT":      30,      # HTTP request timeout (seconds)
-    "WORKERS":      15,      # ThreadPoolExecutor max workers
-    "BATCH_SIZE":   5,       # detail-fetch batch size
+    "TIMEOUT":      25,      # HTTP request timeout (seconds) — fail fast, then retry
+    "WORKERS":      25,      # ThreadPoolExecutor max workers (I/O-bound, so higher is fine)
+    "BATCH_SIZE":   20,      # detail-fetch batch size (was 5 — bigger = less overhead)
 
     # ── Detail fetch strategy ─────────────────────────────────────────
     "FAST_MODE":    True,
     "DETAIL_MODE":  "AUTO",  # AUTO | ALWAYS | SKIP
 
     # ── Reliability ───────────────────────────────────────────────────
-    "RETRY_COUNT":  3,
+    "RETRY_COUNT":  2,       # jitter makes 2 retries sufficient (was 3)
 
     # ── Network ───────────────────────────────────────────────────────
     "PROXY":        "",      # e.g. "socks5://127.0.0.1:1080"
 
     # ── Session reuse ─────────────────────────────────────────────────
     "SESSION_FILE": os.path.join(_DATA_DIR, "tds_session.json"),
-    "SESSION_TTL":  3600,    # seconds before saved session expires
+    "SESSION_TTL":  7200,    # 2 hours — avoids Selenium cold-starts on repeated calls
 }

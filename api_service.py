@@ -14,8 +14,6 @@ from fetcher.core      import auth as _auth
 from fetcher.utils.config import CONFIG as _CFG
 
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
-# In Docker:  DATA_DIR=/app/data (mounted volume)
-# Locally:    DATA_DIR=./data   (auto-created)
 DATA_DIR      = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
 JOBS_FILE     = os.path.join(DATA_DIR, "jobs.json")
@@ -34,10 +32,13 @@ logger = logging.getLogger("TDS_API")
 
 # ── Job store ─────────────────────────────────────────────────────────────────
 
-jobs: dict = {}
-jobs_lock  = threading.Lock()
-# Allow at most 2 concurrent Selenium instances (each needs ~1 GB RAM)
-_sem       = threading.Semaphore(2)
+jobs:      dict  = {}
+jobs_lock        = threading.Lock()
+_sem             = threading.Semaphore(2)   # max 2 concurrent Selenium instances
+
+# Debounced job persistence — write at most once per 3 seconds
+_save_pending  = False
+_save_lock     = threading.Lock()
 
 if os.path.exists(JOBS_FILE):
     try:
@@ -47,13 +48,33 @@ if os.path.exists(JOBS_FILE):
         jobs = {}
 
 
-def _save_jobs() -> None:
+def _flush_jobs() -> None:
+    """Write jobs dict to disk (called from background debounce thread)."""
     with jobs_lock:
-        try:
-            with open(JOBS_FILE, "w") as f:
-                json.dump(jobs, f, indent=2)
-        except Exception as exc:
-            logger.error("Failed to persist jobs: %s", exc)
+        snapshot = dict(jobs)
+    try:
+        with open(JOBS_FILE, "w") as f:
+            json.dump(snapshot, f, indent=2)
+    except Exception as exc:
+        logger.error("Failed to persist jobs: %s", exc)
+
+
+def _save_jobs() -> None:
+    """Schedule a debounced flush — coalesces rapid successive writes."""
+    global _save_pending
+    with _save_lock:
+        if _save_pending:
+            return
+        _save_pending = True
+
+    def _do_flush():
+        global _save_pending
+        # Wait a moment to absorb any following writes in the same burst
+        threading.Event().wait(timeout=2.0)
+        _save_pending = False
+        _flush_jobs()
+
+    threading.Thread(target=_do_flush, daemon=True).start()
 
 
 def _patch_job(job_id: str, **fields) -> None:
@@ -102,12 +123,14 @@ def _run_job(job_id: str, req: FetchRequest) -> None:
         try:
             path, count, grand = run_fetch(cfg)
             entity_path = os.path.join(DATA_DIR, f"{req.tan}_entity_profile.json")
+            json_path   = path.rsplit(".", 1)[0] + ".json"
             _patch_job(
                 job_id,
                 status="completed",
                 completed_at=datetime.now().isoformat(),
                 result={
                     "excel_file":          path,
+                    "json_file":           json_path if os.path.exists(json_path) else None,
                     "record_count":        count,
                     "grand_total":         grand,
                     "entity_profile_file": entity_path if os.path.exists(entity_path) else None,
@@ -163,6 +186,32 @@ async def download_result(job_id: str):
     return FileResponse(path, filename=os.path.basename(path))
 
 
+@app.get("/tds/api/v1/jobs/{job_id}/data")
+async def get_job_data(job_id: str):
+    """
+    Return the enriched challan array as JSON — no Excel download needed.
+
+    The JSON sidecar is written alongside the .xlsx during job execution.
+    Response is the same data the Excel contains, as a plain JSON array.
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = jobs[job_id]
+    if job["status"] != "completed":
+        raise HTTPException(status_code=400,
+                            detail=f"Job status is '{job['status']}'")
+    json_path = job.get("result", {}).get("json_file")
+    if not json_path or not os.path.exists(json_path):
+        raise HTTPException(status_code=404,
+                            detail="JSON data file not found — re-run the job")
+    try:
+        with open(json_path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"Failed to read data file: {exc}")
+
+
 @app.get("/tds/api/v1/jobs")
 async def list_jobs():
     return list(jobs.values())
@@ -178,9 +227,6 @@ async def fetch_entity(req: EntityRequest, background_tasks: BackgroundTasks):
     1. Reuse a saved session if one exists for the TAN (fast — no Selenium).
     2. Otherwise start a fresh Selenium login (takes ~30-60 s).
     3. Call /servicesapi/auth/saveEntity and return the profile as JSON.
-
-    The profile is also written to  data/<TAN>_entity_profile.json  on disk
-    so that GET /tds/api/v1/entity/{tan} can serve it without re-fetching.
     """
     job_id = str(uuid.uuid4())
     with jobs_lock:
@@ -213,8 +259,6 @@ def _run_entity_job(job_id: str, req: EntityRequest) -> None:
 
             from fetcher.main import _save_entity_profile
 
-            # Prefer the CDP-captured body from dashboard load (no 403 risk).
-            # Fall back to a direct API call if CDP didn't capture it.
             profile = None
             if cdp_capture is not None and driver is not None:
                 profile = cdp_capture.get_response_body(
@@ -251,13 +295,7 @@ def _run_entity_job(job_id: str, req: EntityRequest) -> None:
 
 @app.get("/tds/api/v1/entity/{tan}")
 async def get_entity_profile(tan: str):
-    """
-    Return the cached entity profile for a TAN.
-
-    The profile is written to disk automatically whenever a fetch job
-    (POST /tds/api/v1/fetch) or an entity job (POST /tds/api/v1/entity)
-    completes for this TAN.
-    """
+    """Return the cached entity profile for a TAN."""
     profile_path = os.path.join(DATA_DIR, f"{tan}_entity_profile.json")
     if not os.path.exists(profile_path):
         raise HTTPException(

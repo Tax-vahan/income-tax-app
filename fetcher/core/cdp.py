@@ -93,7 +93,7 @@ class CDPCapture:
                     self._handle_entry(entry)
             except Exception:
                 pass
-            time.sleep(0.1)
+            time.sleep(0.4)
 
     def _handle_entry(self, entry: dict) -> None:
         try:
@@ -113,13 +113,12 @@ class CDPCapture:
                         "postData":  req.get("postData", ""),
                         "requestId": params.get("requestId", ""),
                     })
-                    try:
-                        with open("cdp_dump.txt", "a") as f:
-                            f.write(url + "\n")
-                            f.write("HEADERS: " + json.dumps(req.get("headers", {})) + "\n")
-                            f.write("BODY: " + str(req.get("postData", "")) + "\n\n")
-                    except Exception:
-                        pass
+                    # Bound memory: prune consumed entries once list grows large
+                    if len(self._captured) > 120:
+                        self._captured = [
+                            c for c in self._captured
+                            if c["requestId"] not in self._consumed
+                        ][-100:]
                 log.info("CDP captured: %s", url)
 
             elif method in ("Network.loadingFinished",

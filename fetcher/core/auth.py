@@ -138,6 +138,16 @@ def _start_chrome(proxy: str = ""):
     opts.add_argument(f"--user-agent={USER_AGENT}")
     # Performance logging streams CDP events through driver.get_log()
     opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+    # ── Page-load performance — disable unused browser subsystems ────────
+    opts.add_argument("--blink-settings=imagesEnabled=false")  # no images
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--disable-translate")
+    opts.add_argument("--hide-scrollbars")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--disable-default-apps")
+    opts.add_argument("--mute-audio")
     if proxy:
         opts.add_argument(f"--proxy-server={proxy}")
         log.info("Using proxy: %s", proxy)
@@ -235,15 +245,14 @@ def login(tan: str, password: str, proxy: str = "") -> Tuple:
     try:
         log.info("Opening login page ...")
         driver.get(BASE + "/iec/foservices/#/login")
-        time.sleep(4)
-
+        # No fixed sleep — wait for the TAN input to appear
         log.info("Entering TAN: %s", tan)
         tan_field = W.until(EC.presence_of_element_located(
             (By.CSS_SELECTOR, "input[type='text'], input[placeholder*='PAN']")
         ))
         tan_field.clear()
         tan_field.send_keys(tan)
-        time.sleep(0.5)
+        time.sleep(0.3)
 
         log.info("Clicking Continue ...")
         btn = W.until(EC.element_to_be_clickable(
@@ -252,8 +261,7 @@ def login(tan: str, password: str, proxy: str = "") -> Tuple:
              "[not(contains(normalize-space(.), 'Back'))]")
         ))
         driver.execute_script("arguments[0].click();", btn)
-        time.sleep(4)
-
+        # No fixed sleep — wait for password field to appear
         try:
             W.until(EC.presence_of_element_located(
                 (By.CSS_SELECTOR, "input[type='password']")
@@ -266,42 +274,46 @@ def login(tan: str, password: str, proxy: str = "") -> Tuple:
 
         log.info("Ticking SAM checkbox ...")
         _tick_checkbox(driver)
-        time.sleep(0.5)
+        time.sleep(0.3)
 
         log.info("Entering password ...")
         pwd = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
         pwd.clear()
         pwd.send_keys(password)
-        time.sleep(0.5)
+        time.sleep(0.3)
 
         log.info("Submitting login ...")
-        for _ in range(8):
-            for b in driver.find_elements(By.TAG_NAME, "button"):
-                if ("Continue" in b.text
-                        and b.is_enabled()
-                        and not b.get_attribute("disabled")):
-                    driver.execute_script("arguments[0].click();", b)
-                    log.info("Clicked Continue")
-                    break
-            else:
-                time.sleep(1)
-                continue
-            break
-
-        time.sleep(5)
-        _handle_dual_login(driver)
-        time.sleep(4)
-
-        log.info("Post-submit URL: %s", driver.current_url)
-        for tick in range(15):
-            if "login" not in driver.current_url.lower():
-                log.info("Login SUCCESS")
+        _clicked = False
+        # Try type="submit" first, then any Continue/Login button (covers Angular Material)
+        for xpath in [
+            "//button[@type='submit']",
+            "//button[contains(normalize-space(.),'Continue') and not(contains(normalize-space(.),'Back'))]",
+            "//button[contains(normalize-space(.),'Login') or contains(normalize-space(.),'Sign In')]",
+        ]:
+            try:
+                btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                driver.execute_script("arguments[0].click();", btn)
+                log.info("Clicked login submit: %s", btn.text or xpath)
+                _clicked = True
                 break
-            if tick == 4:   # snapshot mid-wait for diagnostics
-                driver.save_screenshot("login_pending.png")
-                log.info("Mid-wait snapshot → login_pending.png")
-            time.sleep(2)
-        else:
+            except Exception:
+                continue
+
+        if not _clicked:
+            # Last resort: send Enter key on the password field
+            from selenium.webdriver.common.keys import Keys
+            pwd.send_keys(Keys.RETURN)
+            log.info("Pressed Enter on password field (fallback)")
+
+        # Brief pause for dual-login popup, then wait for URL redirect
+        time.sleep(2)
+        _handle_dual_login(driver)
+        try:
+            WebDriverWait(driver, 30).until(
+                lambda d: "login" not in d.current_url.lower()
+            )
+            log.info("Login SUCCESS — URL: %s", driver.current_url)
+        except Exception:
             log.error("Login FAILED — still on: %s", driver.current_url)
             driver.save_screenshot("login_failed.png")
             log.error("Screenshot → login_failed.png  (check for error message / OTP page)")
@@ -336,24 +348,34 @@ def open_payment_history_ui(driver) -> bool:
     log.info("Opening Payment History ...")
     W = WebDriverWait(driver, 40)
     try:
-        W.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        time.sleep(3)
-
-        # e-File menu
-        efile = W.until(EC.presence_of_element_located(
+        # e-File menu — wait until clickable (implies Angular is bootstrapped)
+        efile = W.until(EC.element_to_be_clickable(
             (By.XPATH, "//span[normalize-space()='e-File']")
         ))
         driver.execute_script("arguments[0].click();", efile)
         log.info("  Clicked e-File")
-        time.sleep(3)
 
-        # e-Pay Tax submenu
-        epay = W.until(EC.presence_of_element_located(
+        # e-Pay Tax — wait for VISIBILITY (stricter: requires the dropdown to be open)
+        epay = W.until(EC.visibility_of_element_located(
             (By.XPATH, "//span[contains(text(),'e-Pay Tax')]")
         ))
         driver.execute_script("arguments[0].click();", epay)
         log.info("  Clicked e-Pay Tax")
-        time.sleep(8)
+
+        # After clicking e-Pay Tax the portal may show EITHER:
+        #   (a) An "Income Tax Act" selection dialog  → tab group only appears after dismissing it
+        #   (b) The tab group directly
+        # Wait for whichever comes first (up to 20s).
+        try:
+            W.until(lambda d: (
+                "Select Applicable Income Tax Act" in d.page_source
+                or len(d.find_elements(
+                    By.XPATH,
+                    "//div[@role='tab'][.//span[contains(text(),'Payment History')]]"
+                )) > 0
+            ))
+        except Exception:
+            log.warning("  Neither Act dialog nor tab group appeared — proceeding anyway")
 
         # Income Tax Act selection dialog
         for attempt in range(3):
@@ -365,26 +387,35 @@ def open_payment_history_ui(driver) -> bool:
                     (By.XPATH, "//label[contains(.,'Income-tax Act, 1961')]")
                 ))
                 driver.execute_script("arguments[0].click();", act_radio)
-                time.sleep(1)
-                cont_btn = W.until(EC.presence_of_element_located(
+                time.sleep(0.5)
+                cont_btn = W.until(EC.element_to_be_clickable(
                     (By.XPATH,
                      "//button[contains(@class,'large-button-primary')"
                      " and normalize-space()='Continue']")
                 ))
                 driver.execute_script("arguments[0].click();", cont_btn)
                 log.info("  Clicked Continue")
-                time.sleep(5)
+                # Wait for dialog to disappear before checking again
+                try:
+                    WebDriverWait(driver, 15).until(
+                        lambda d: "Select Applicable Income Tax Act" not in d.page_source
+                    )
+                except Exception:
+                    pass
             except Exception as exc:
                 log.warning("  Act selection error: %s", exc)
 
-        W.until(lambda d: "Select Applicable Income Tax Act" not in d.page_source)
+        # Now wait for the tab group (dialog gone, page should be fully rendered)
+        W.until(EC.presence_of_element_located(
+            (By.XPATH, "//div[@role='tab'][.//span[contains(text(),'Payment History')]]")
+        ))
 
         # Payment History tab
         log.info("  Switching to Payment History tab ...")
         for attempt in range(5):
             history_tab = driver.find_element(By.XPATH, "//div[@role='tab'][.//span[contains(text(),'Payment History')]]")
             driver.execute_script("arguments[0].click();", history_tab)
-            time.sleep(3)
+            time.sleep(1)
             # Check if active (Angular often adds a class like 'mat-tab-label-active' or similar)
             if "Payment History" in driver.execute_script("return document.querySelector('.mat-mdc-tab.mdc-tab--active')?.textContent || ''"):
                 log.info("  Tab 'Payment History' is now active")
@@ -435,7 +466,13 @@ def build_session(
     Construct a requests.Session from Selenium cookies + CDP-captured
     Angular request headers.
     """
+    from requests.adapters import HTTPAdapter
+
     sess = requests.Session()
+    # Keep-alive connection pool: reuse TCP connections across parallel detail fetches
+    _adapter = HTTPAdapter(pool_connections=10, pool_maxsize=25, max_retries=0)
+    sess.mount("https://", _adapter)
+    sess.mount("http://",  _adapter)
 
     se_cookies = driver.get_cookies()
     for c in se_cookies:
@@ -605,7 +642,18 @@ def get_session(cfg: dict) -> Tuple:
 
     log.info("Navigating to dashboard ...")
     driver.get(BASE + "/iec/foservices/#/dashboard")
-    time.sleep(5)
+    # Wait for Angular to bootstrap — e-File menu appearing means the shell is ready
+    try:
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located(
+                (By.XPATH, "//span[normalize-space()='e-File']")
+            )
+        )
+    except Exception:
+        log.warning("Dashboard did not render e-File menu within 30s — proceeding anyway")
 
     if not open_payment_history_ui(driver):
         log.error("Payment History navigation failed")
@@ -613,7 +661,7 @@ def get_session(cfg: dict) -> Tuple:
         driver.quit()
         return None, None, None
 
-    time.sleep(3)   # let Angular fire background API calls
+    time.sleep(1)   # brief settle so Angular fires background API calls
 
     log.info("Waiting for CDP headers ...")
     cdp_headers = cdp_capture.wait_for_api_headers(

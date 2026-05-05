@@ -138,8 +138,8 @@ def _best_date(item: dict) -> tuple[Optional[datetime], Optional[str]]:
     if dt:
         return dt, "crn"
 
-    for field in ("paymentDt", "paymentDate", "tenderDt", "tenderDate", "dateOfDeposit", "paymentTime"):
-
+    for field in ("paymentDt", "paymentDate", "tenderDt", "tenderDate",
+                  "dateOfDeposit", "paymentTime"):
         v = item.get(field)
         if v:
             dt = (_parse_epoch(v) if isinstance(v, (int, float))
@@ -147,14 +147,14 @@ def _best_date(item: dict) -> tuple[Optional[datetime], Optional[str]]:
             if dt:
                 return dt, field
 
-    v = item.get("paymentTime")
-    if v:
-        dt = (_parse_epoch(v) if isinstance(v, (int, float))
-              else _parse_date_str(str(v)))
-        if dt:
-            return dt, "paymentTime"
-
     return None, None
+
+
+def _financial_year(dt: datetime) -> str:
+    """Return Indian FY string e.g. '2025-26' for any date in that year."""
+    if dt.month >= 4:
+        return f"{dt.year}-{str(dt.year + 1)[2:]}"
+    return f"{dt.year - 1}-{str(dt.year)[2:]}"
 
 
 # ── Date filter ────────────────────────────────────────────────────────────────
@@ -316,6 +316,11 @@ def enrich(summary: dict, detail: dict) -> dict:
     if not m.get("paymentDt"):
         m["paymentDt"] = m.get("tenderDt") or ""
 
+    # ── Bank code from CIN hybrid (e.g. "26041100002738KKBK" → "KKBK") ──
+    cin_raw = str(m.get("cin") or "").strip()
+    if len(cin_raw) >= 18 and cin_raw[:14].isdigit() and not cin_raw[14:18].isdigit():
+        m.setdefault("bankCode", cin_raw[14:18].upper())
+
     # ── Coerce monetary fields to integers ─────────────────────────────
     for field in ("basicTax", "surCharge", "eduCess",
                   "interest", "penalty", "others"):
@@ -334,11 +339,17 @@ def enrich(summary: dict, detail: dict) -> dict:
     except (ValueError, TypeError):
         m["totalAmt"] = 0
 
-    # ── Final date fallback ────────────────────────────────────────────
-    if not m.get("paymentDt"):
-        best_dt, _ = _best_date(m)
-        if best_dt:
+    # ── Final date fallback + derived time fields ──────────────────────
+    best_dt, _ = _best_date(m)
+    if best_dt:
+        if not m.get("paymentDt"):
             m["paymentDt"] = best_dt.strftime("%d/%m/%Y")
+        fy = _financial_year(best_dt)
+        m.setdefault("financialYear",   fy)
+        fy_start = int(fy.split("-")[0])
+        m.setdefault("assessmentYear",  f"{fy_start + 1}-{str(fy_start + 2)[2:]}")
+        m.setdefault("paymentMonth",    best_dt.strftime("%b %Y"))      # "Apr 2026"
+        m.setdefault("paymentMonthNum", f"{best_dt.month:02d}/{best_dt.year}")  # "04/2026"
 
     # ── Normalise date strings ─────────────────────────────────────────
     m["paymentDt"] = _fmt_date(m.get("paymentDt"))
