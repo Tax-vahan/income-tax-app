@@ -127,11 +127,21 @@ def _detail_sheet(wb, challans, cfg):
         _hcell(ws, 2, ci, hdr)
         ws.column_dimensions[get_column_letter(ci)].width = w
 
+    # Fields that must always be stored as text to preserve leading zeros
+    _TEXT_FIELDS = {"bsrCode", "challanNum", "cin"}
+
     for ri, ch in enumerate(challans, 3):
         ws.row_dimensions[ri].height = 16
         alt = (ri % 2 == 0)
         for ci, (_, field, _, fmt) in enumerate(COLUMNS, 1):
-            val = (ri - 2) if field == "__sr__" else (ch.get(field) or "")
+            if field == "__sr__":
+                val = ri - 2
+            else:
+                val = ch.get(field) or ""
+                # Coerce identifier fields to str so Excel never interprets them
+                # as numbers (which would silently drop leading zeros)
+                if field in _TEXT_FIELDS and val != "":
+                    val = str(val)
             _dcell(ws, ri, ci, val, fmt=fmt, alt=alt)
 
     tr = 3 + len(challans)

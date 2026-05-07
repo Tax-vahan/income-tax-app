@@ -40,25 +40,28 @@ def extract_bsr_code(data: dict) -> Optional[str]:
     """
     Extract the BSR code with strict 3-level priority:
 
-    1. ``bsrCode`` field — if present and exactly 7 digits.
-    2. ``alternateCin[:7]`` — if alternateCin is a 20-char all-numeric string.
-    3. ``cin[:7]``          — if cin is a 20-char all-numeric string.
+    1. ``bsrCode`` / ``bsrCd`` field — coerced to string, 6–7 digits
+       (zero-padded to 7 if needed, since Indian BSR codes can have leading zeros).
+    2. ``alternateCin[:7]``  — if the first 7 chars of alternateCin are all digits.
+    3. ``cin[:7]``           — only if cin is a full 20-char all-numeric bank CIN.
 
-    Returns a 7-digit string, or ``None`` if all sources are exhausted or invalid.
+    Returns a 7-digit zero-padded string, or ``None`` if all sources exhausted.
     """
-    # Priority 1: direct bsrCode
-    bsr = data.get("bsrCode")
-    if bsr and isinstance(bsr, str):
-        bsr = bsr.strip()
-        if bsr.isdigit() and len(bsr) == 7:
-            return bsr
+    # Priority 1: direct bsrCode (or bsrCd alias) — may arrive as int from JSON
+    for field in ("bsrCode", "bsrCd"):
+        raw = data.get(field)
+        if raw is None:
+            continue
+        bsr = str(raw).strip()
+        if bsr.isdigit() and 6 <= len(bsr) <= 7:
+            return bsr.zfill(7)      # zero-pad 6-digit codes to 7
 
-    # Priority 2: alternateCin  (format: BSR(7) + Date(8) + Serial(5) = 20 chars)
+    # Priority 2: alternateCin  (format: BSR(7) + Date(DDMMYYYY=8) + Serial(5) = 20 chars)
     alt_cin = str(data.get("alternateCin") or "").strip()
     if len(alt_cin) >= 7 and alt_cin[:7].isdigit():
         return alt_cin[:7]
 
-    # Priority 3: cin  (only if it is the full 20-char numeric bank CIN)
+    # Priority 3: cin  (only if it is the full 20-char all-numeric bank CIN)
     cin = str(data.get("cin") or "").strip()
     if len(cin) == 20 and cin.isdigit():
         return cin[:7]
@@ -243,8 +246,8 @@ def enrich(summary: dict, detail: dict) -> dict:
             m[k] = v
 
     # ── Field alias normalisation ──────────────────────────────────
-    if not m.get("bsrCode")   and m.get("bsrCd"):
-        m["bsrCode"]  = m["bsrCd"]
+    # Note: bsrCode/bsrCd coercion is handled inside extract_bsr_code below;
+    # we do NOT pre-copy bsrCd here to avoid contaminating with raw ints.
     if not m.get("tenderDt")  and m.get("tenderDate"):
         m["tenderDt"] = m["tenderDate"]
     if not m.get("totalAmt"):
