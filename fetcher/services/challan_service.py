@@ -9,7 +9,7 @@ Pipeline
       C. DOM scraper callback            (last resort, needs live driver)
 2. Date-filter results
 3. Smart detail-fetch gating (skip if data already complete)
-4. Parallel copychallan detail fetches with ThreadPoolExecutor + circuit breaker
+4. Parallel paymentdetails detail fetches with ThreadPoolExecutor + circuit breaker
 5. Return enriched dataset + observability stats dict
 """
 
@@ -99,7 +99,7 @@ def _fetch_detail_parallel(
     max_workers: int = 8,
 ) -> tuple[dict, list]:
     """
-    Fetch copychallan detail for every summary in *summaries* concurrently.
+    Fetch paymentdetails detail for every summary in *summaries* concurrently.
 
     Returns
     -------

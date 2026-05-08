@@ -520,7 +520,7 @@ def build_session(
 
     if not any(k.upper() == "X-XSRF-TOKEN" for k in hdrs):
         log.warning("X-XSRF-TOKEN not found in any cookie — "
-                    "copychallan API may fail; browser CDP fallback will still work")
+                    "paymentdetails API may fail; browser CDP fallback will still work")
 
     sess.headers.update(hdrs)
     log.info("Session headers set: %s", list(hdrs.keys()))

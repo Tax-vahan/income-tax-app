@@ -213,9 +213,9 @@ class CDPCapture:
         with self._lock:
             return list(self._captured)
 
-    def get_copychallan_request_template(self) -> Optional[dict]:
+    def get_payment_details_request_template(self) -> Optional[dict]:
         """
-        Search the captured request log for a /copychallan POST and return
+        Search the captured request log for a /paymentdetails POST and return
         its *exact* URL, headers, and parsed JSON payload.
 
         This allows the requests.Session layer to replay the EXACT browser
@@ -230,11 +230,11 @@ class CDPCapture:
                 'payload': dict,         # parsed JSON body (postData)
             }
 
-        Returns None if no copychallan request has been captured yet.
+        Returns None if no paymentdetails request has been captured yet.
         """
         with self._lock:
             for cap in self._captured:
-                if "/copychallan" in cap["url"]:
+                if "/paymentdetails" in cap["url"]:
                     try:
                         post_data = cap.get("postData", "{}")
                         if isinstance(post_data, str):
@@ -243,7 +243,7 @@ class CDPCapture:
                             payload = post_data or {}
 
                         log.info(
-                            "Copychallan template captured: %s  headers=%s  payload_keys=%s",
+                            "PaymentDetails template captured: %s  headers=%s  payload_keys=%s",
                             cap["url"],
                             list(cap["headers"].keys()),
                             list(payload.get("formData", {}).keys()),
@@ -254,7 +254,7 @@ class CDPCapture:
                             "payload": payload,
                         }
                     except Exception as exc:
-                        log.warning("Failed to parse copychallan postData: %s", exc)
+                        log.warning("Failed to parse paymentdetails postData: %s", exc)
 
-        log.warning("Copychallan request NOT yet captured by CDP")
+        log.warning("PaymentDetails request NOT yet captured by CDP")
         return None

@@ -73,44 +73,45 @@ def fetch_challan_detail(
     tan:     str,
 ) -> dict:
     """
-    Full detail for a single challan via the copychallan endpoint.
+    Full detail for a single challan via the paymentdetails endpoint.
 
-    Uses the minimal correct payload confirmed from real browser traffic:
-      formName = PO-03-PYMNT, crn + entityNum only.
+    Payload confirmed from real browser traffic:
+      formName = PO-03-PYMNT, cin + entityNum only.
     """
-    crn = (summary.get("crn") or str(summary.get("cin", ""))[:14] or "").strip()
+    # Prefer 'cin' as required by paymentdetails; fallback to CRN-based hybrid if needed
+    cin = (summary.get("cin") or summary.get("crn") or "").strip()
 
-    url = API_BASE + "/paymentapi/auth/challan/copychallan"
+    url = API_BASE + "/paymentapi/auth/challan/paymentdetails"
     payload = {
         "header": {"formName": "PO-03-PYMNT"},
         "formData": {
-            "crn":       crn,
+            "cin":       cin,
             "entityNum": tan,
         },
     }
 
-    log.info("[API] Sending copychallan  CRN=%s", crn)
+    log.info("[API] Sending paymentdetails  CIN=%s", cin)
     log.debug("[API] Payload: %s", payload)
 
     try:
         resp = session.post(url, json=payload, timeout=CONFIG["TIMEOUT"])
-        log.info("[API] Status Code: %s  CRN=%s", resp.status_code, crn)
+        log.info("[API] Status Code: %s  CIN=%s", resp.status_code, cin)
         resp.raise_for_status()
         result = resp.json()
     except requests.exceptions.RequestException as exc:
-        log.error("[API] Network error  CRN=%s: %s", crn, exc)
+        log.error("[API] Network error  CIN=%s: %s", cin, exc)
         raise
 
     log.info(
-        "[API] successFlag=%s  CRN=%s  messages=%s",
-        result.get("successFlag"), crn, result.get("messages"),
+        "[API] successFlag=%s  CIN=%s  messages=%s",
+        result.get("successFlag"), cin, result.get("messages"),
     )
     if not result.get("successFlag"):
         log.error(
-            "[ERROR] copychallan failed for CRN=%s\n"
+            "[ERROR] paymentdetails failed for CIN=%s\n"
             "  Payload : %s\n"
             "  Response: %s",
-            crn, payload, result,
+            cin, payload, result,
         )
     return result
 
