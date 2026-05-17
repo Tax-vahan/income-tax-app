@@ -19,6 +19,8 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       DATA_DIR: "/app/data"
+      DOWNLOADS_DIR: "/app/downloads"
+      FILED_FORMS_DIR: "/app/filed_forms"
       CHROME_BIN: "/usr/bin/chromium"
       CHROMEDRIVER_BIN: "/usr/bin/chromedriver"
 
@@ -31,6 +33,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./downloads:/app/downloads
+      - ./filed_forms:/app/filed_forms
 
     # ── Restart policy ────────────────────────────────────────────────
     restart: unless-stopped

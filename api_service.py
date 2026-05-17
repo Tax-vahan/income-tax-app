@@ -14,13 +14,15 @@ from fetcher.core.api  import fetch_entity_profile
 from fetcher.core      import auth as _auth
 from fetcher.utils.config import CONFIG as _CFG
 
-BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR      = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
-DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
-JOBS_FILE     = os.path.join(DATA_DIR, "jobs.json")
+BASE_DIR          = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR          = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
+DOWNLOADS_DIR     = os.environ.get("DOWNLOADS_DIR", os.path.join(BASE_DIR, "downloads"))
+FILED_FORMS_DIR   = os.environ.get("FILED_FORMS_DIR", os.path.join(BASE_DIR, "filed_forms"))
+JOBS_FILE         = os.path.join(DATA_DIR, "jobs.json")
 
-os.makedirs(DATA_DIR,      exist_ok=True)
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+os.makedirs(DATA_DIR,        exist_ok=True)
+os.makedirs(DOWNLOADS_DIR,   exist_ok=True)
+os.makedirs(FILED_FORMS_DIR, exist_ok=True)
 
 
 app = FastAPI(title="TDS Challan API", version="6.0")
@@ -98,8 +100,12 @@ def _worker() -> None:
         try:
             if kind == "fetch":
                 _run_job(job_id, req)
-            else:
+            elif kind == "entity":
                 _run_entity_job(job_id, req)
+            elif kind == "view_filed_forms":
+                _run_view_filed_forms_job(job_id, req)
+            else:
+                logger.error("Unknown job kind: %s", kind)
         except Exception:
             logger.exception("Unhandled worker error for job %s", job_id)
         finally:
@@ -156,6 +162,12 @@ class FetchRequest(BaseModel):
 class EntityRequest(BaseModel):
     tan:      str
     password: str
+
+
+class ViewFiledFormsRequest(BaseModel):
+    tan:          str
+    password:     str
+    form_type_cd: str
 
 
 # ── Job runners (called by worker threads, never the request thread) ───────────
@@ -240,6 +252,61 @@ def _run_entity_job(job_id: str, req: EntityRequest) -> None:
         logger.info("Entity job %s done — %s", job_id, profile_path)
     except Exception:
         logger.exception("Entity job %s failed", job_id)
+        _patch_job(job_id, status="failed",
+                   completed_at=datetime.now().isoformat())
+
+
+def _run_view_filed_forms_job(job_id: str, req: ViewFiledFormsRequest) -> None:
+    logger.info("ViewFiledForms job %s started for TAN %s, Form %s", job_id, req.tan, req.form_type_cd)
+    _patch_job(job_id, status="running", started_at=datetime.now().isoformat())
+    cfg = {**_CFG, "TAN": req.tan, "PASSWORD": req.password}
+    try:
+        session, driver, cdp_capture = _auth.get_session(cfg)
+        if session is None:
+            raise RuntimeError("Session establishment failed")
+
+        from fetcher.core.api import fetch_view_filed_forms
+        resp = fetch_view_filed_forms(session, req.tan, req.form_type_cd)
+        
+        forms_data = resp.get("forms", [])
+        extracted = []
+        for form in forms_data:
+            extracted.append({
+                "tempAckNo": form.get("tempAckNo"),
+                "ackDt": form.get("ackDt"),
+                "ackNum": form.get("ackNum"),
+                "filingTypeCd": form.get("filingTypeCd"),
+                "fillingMode": form.get("fillingMode"),
+                "activities": form.get("activities"),
+                "financialQrtr": form.get("financialQrtr"),
+                "formTypeCd": form.get("formTypeCd"),
+                "refYear": form.get("refYear"),
+            })
+
+        if cdp_capture:
+            cdp_capture.stop()
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+        # Save to filed_forms/<TAN>/<form_type>/<TAN>_<form_type>.json
+        form_dir = os.path.join(FILED_FORMS_DIR, req.tan, req.form_type_cd)
+        os.makedirs(form_dir, exist_ok=True)
+        out_path = os.path.join(form_dir, f"{req.tan}_{req.form_type_cd}.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(extracted, f, indent=2)
+
+        _patch_job(
+            job_id,
+            status="completed",
+            completed_at=datetime.now().isoformat(),
+            result={"json_file": out_path},
+        )
+        logger.info("ViewFiledForms job %s done — %s", job_id, out_path)
+    except Exception:
+        logger.exception("ViewFiledForms job %s failed", job_id)
         _patch_job(job_id, status="failed",
                    completed_at=datetime.now().isoformat())
 
@@ -420,6 +487,40 @@ async def get_entity_profile(tan: str):
     except Exception as exc:
         raise HTTPException(status_code=500,
                             detail=f"Failed to read profile: {exc}")
+
+
+@app.post("/tds/api/v1/view-filed-forms")
+async def view_filed_forms(req: ViewFiledFormsRequest):
+    """Fetch filed forms for a given form type (e.g. F27EQ)."""
+    existing = _active_tan_job(req.tan, "view_filed_forms")
+    if existing:
+        return {
+            "job_id":  existing["id"],
+            "status":  existing["status"],
+            "message": f"A view_filed_forms job for TAN {req.tan} is already {existing['status']}.",
+        }
+
+    pending = _pending_count()
+    if pending >= _MAX_QUEUED:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Server busy — {pending} jobs queued. Try again later.",
+        )
+
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {
+            "id":         job_id,
+            "tan":        req.tan,
+            "form_type":  req.form_type_cd,
+            "type":       "view_filed_forms",
+            "status":     "pending",
+            "created_at": datetime.now().isoformat(),
+        }
+    _save_jobs()
+    _job_queue.put((job_id, "view_filed_forms", req))
+    pos = _queue_position(job_id)
+    return {"job_id": job_id, "status": "pending", "queue_position": pos}
 
 
 @app.get("/tds/api/health")

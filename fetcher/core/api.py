@@ -139,6 +139,31 @@ def fetch_entity_profile(
     return result
 
 
+@with_retry(max_retries=CONFIG["RETRY_COUNT"], base_delay=1.0)
+def fetch_view_filed_forms(
+    session: requests.Session,
+    tan:     str,
+    form_type_cd: str,
+) -> dict:
+    """
+    Fetch filed forms for a specific form type.
+    Endpoint: /servicesapi/auth/saveEntity
+    """
+    url     = API_BASE + "/servicesapi/auth/saveEntity"
+    payload = {
+        "serviceName": "viewFiledForms",
+        "entityNum": tan,
+        "formTypeCd": form_type_cd,
+        "currentPage": "0",
+        "pageSize": "100",
+        "filterParameterDetails": []
+    }
+    log.info("Fetching filed forms for TAN=%s Form=%s", tan, form_type_cd)
+    result = _post(session, url, payload, timeout=CONFIG["TIMEOUT"])
+    log.info("Fetched %s forms", result.get("responseCount", 0))
+    return result
+
+
 def extend_session(session: requests.Session, tan: str) -> bool:
     """Ping extendSession to keep the backend alive."""
     try:
