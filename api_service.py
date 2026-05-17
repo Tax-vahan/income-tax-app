@@ -523,6 +523,29 @@ async def view_filed_forms(req: ViewFiledFormsRequest):
     return {"job_id": job_id, "status": "pending", "queue_position": pos}
 
 
+@app.get("/tds/api/v1/view-filed-forms/{tan}/{form_type_cd}")
+async def get_filed_forms(tan: str, form_type_cd: str):
+    """Return the cached filed forms data for a TAN and form type.
+
+    Example: GET /tds/api/v1/view-filed-forms/PTLA13241E/F27EQ
+    """
+    form_path = os.path.join(FILED_FORMS_DIR, tan, form_type_cd, f"{tan}_{form_type_cd}.json")
+    if not os.path.exists(form_path):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No filed forms found for TAN {tan}, form {form_type_cd}. "
+                "Run POST /tds/api/v1/view-filed-forms first to fetch and cache the data."
+            ),
+        )
+    try:
+        with open(form_path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"Failed to read filed forms data: {exc}")
+
+
 @app.get("/tds/api/health")
 async def health():
     with jobs_lock:
