@@ -7,12 +7,22 @@ import logging
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 from fetcher.main import run_fetch
 from fetcher.core.api  import fetch_entity_profile
 from fetcher.core      import auth as _auth
 from fetcher.utils.config import CONFIG as _CFG
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from pan_verification.api.endpoints import router as pan_router
+from pan_verification.automation.browser_manager import BrowserManager
+from pan_verification.core import get_session_manager, close_session_manager
+from pan_verification.core.page_pool import cleanup_page_pool
+from pan_verification.utils.errors import AutomationError, map_automation_error_to_http
+
 
 BASE_DIR          = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR          = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
@@ -25,7 +35,91 @@ os.makedirs(DOWNLOADS_DIR,   exist_ok=True)
 os.makedirs(FILED_FORMS_DIR, exist_ok=True)
 
 
-app = FastAPI(title="TDS Challan API", version="6.0")
+_stop_event = threading.Event()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting TDS background workers...")
+    _stop_event.clear()
+    
+    app.state.jobs = jobs
+    app.state.jobs_lock = jobs_lock
+    app.state.job_queue = _job_queue
+    app.state.stop_event = _stop_event
+    
+    workers = []
+    for _i in range(_WORKER_COUNT):
+        t = threading.Thread(
+            target=_worker, daemon=True, name=f"JobWorker-{_i + 1}"
+        )
+        t.start()
+        workers.append(t)
+    
+    app.state.workers = workers
+    
+    # PAN Verification Startup
+    try:
+        logger.info("Initializing PAN Verification BrowserManager...")
+        await BrowserManager.get_context()
+        logger.info("Initializing PAN Verification SessionManager...")
+        session_mgr = await get_session_manager()
+        
+        app.state.browser_manager = BrowserManager
+        app.state.session_manager = session_mgr
+        app.state.pan_enabled = True
+        logger.info("PAN Verification components initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize PAN Verification components: {e}", exc_info=True)
+        app.state.pan_enabled = False
+
+    yield
+    
+    # Shutdown
+    # PAN Verification Cleanup
+    if getattr(app.state, "pan_enabled", False):
+        try:
+            logger.info("Closing PAN Verification BrowserManager...")
+            await BrowserManager.close()
+            logger.info("Closing PAN Verification SessionManager...")
+            await close_session_manager()
+            logger.info("Cleaning up PAN Verification page pool...")
+            await cleanup_page_pool()
+        except Exception as e:
+            logger.error(f"Error during PAN Verification cleanup: {e}", exc_info=True)
+
+    logger.info("Shutting down TDS background workers...")
+    _stop_event.set()
+    
+    # Push sentinel values to unblock workers waiting on queue.get()
+    for _ in range(_WORKER_COUNT):
+        _job_queue.put(None)
+        
+    for t in workers:
+        t.join(timeout=5.0)
+        
+    _flush_jobs()
+    logger.info("Shutdown complete.")
+
+app = FastAPI(title="TDS Challan API", version="6.0", lifespan=lifespan)
+
+
+from fastapi import Depends
+
+async def check_pan_enabled(request: Request):
+    if getattr(request.app.state, "pan_enabled", False) is False:
+        raise HTTPException(status_code=503, detail="PAN Verification service is currently unavailable.")
+
+app.include_router(pan_router, prefix="/pan-verification", tags=["PAN Verification"], dependencies=[Depends(check_pan_enabled)])
+
+@app.exception_handler(AutomationError)
+async def automation_exception_handler(request: Request, exc: AutomationError):
+    logger.error(f"Automation error: {type(exc).__name__} - {str(exc)}")
+    http_exc = map_automation_error_to_http(exc)
+    return JSONResponse(
+        status_code=http_exc.status_code,
+        content={"detail": http_exc.detail}
+    )
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,7 +167,7 @@ def _save_jobs() -> None:
 
     def _do_flush():
         global _save_pending
-        threading.Event().wait(timeout=2.0)
+        _stop_event.wait(timeout=2.0)
         _save_pending = False
         _flush_jobs()
 
@@ -94,9 +188,14 @@ _job_queue: queue.Queue = queue.Queue()
 
 
 def _worker() -> None:
-    """Runs forever; picks (job_id, kind, req) tuples from the queue."""
-    while True:
-        job_id, kind, req = _job_queue.get()
+    """Runs until _stop_event is set; picks (job_id, kind, req) tuples from the queue."""
+    while not _stop_event.is_set():
+        item = _job_queue.get()
+        if item is None:
+            _job_queue.task_done()
+            break
+            
+        job_id, kind, req = item
         try:
             if kind == "fetch":
                 _run_job(job_id, req)
@@ -110,12 +209,6 @@ def _worker() -> None:
             logger.exception("Unhandled worker error for job %s", job_id)
         finally:
             _job_queue.task_done()
-
-
-for _i in range(_WORKER_COUNT):
-    threading.Thread(
-        target=_worker, daemon=True, name=f"JobWorker-{_i + 1}"
-    ).start()
 
 
 # ── Queue introspection helpers ────────────────────────────────────────────────
@@ -545,6 +638,17 @@ async def get_filed_forms(tan: str, form_type_cd: str):
         raise HTTPException(status_code=500,
                             detail=f"Failed to read filed forms data: {exc}")
 
+
+@app.get("/health", tags=["Monitoring"])
+async def root_health(request: Request):
+    pan_enabled = getattr(request.app.state, "pan_enabled", False)
+    return {
+        "status": "healthy" if pan_enabled else "degraded",
+        "services": {
+            "tds": "healthy",
+            "pan_verification": "healthy" if pan_enabled else "unavailable"
+        }
+    }
 
 @app.get("/tds/api/health")
 async def health():
