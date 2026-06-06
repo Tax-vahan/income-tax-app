@@ -1,10 +1,10 @@
 services:
-  tds-api:
+  tds-pan-api:
     build:
       context: .
       dockerfile: Dockerfile
-    image: tds-api:latest
-    container_name: tds-api
+    image: tds-pan-api:latest
+    container_name: tds-pan-api
 
     # ── Ports ──────────────────────────────────────────────────────────
     ports:
@@ -15,7 +15,7 @@ services:
     #   echo "TDS_TAN=XXXX12345X"    >> .env
     #   echo "TDS_PASSWORD=yourpw"   >> .env
     # Then uncomment the env_file line below.
-    # env_file: .env
+    env_file: .env
     environment:
       PYTHONUNBUFFERED: "1"
       DATA_DIR: "/app/data"

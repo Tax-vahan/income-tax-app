@@ -4,7 +4,7 @@
 #  Uses Chromium from Debian repos (no apt-key / GPG gymnastics).
 #  Chromium + chromium-driver are always version-matched by Debian.
 #
-#  Build:   docker build -t tds-api .
+#  Build:   docker build -t tds-pan-api .
 #  Run:     docker compose up -d
 # ════════════════════════════════════════════════════════════════════
 
@@ -39,11 +39,13 @@ WORKDIR /app
 
 # Install Python deps first (layer-cached unless requirements change)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    playwright install chromium --with-deps
 
 # Copy only what the service needs (see .dockerignore for exclusions)
 COPY api_service.py .
 COPY fetcher/      ./fetcher/
+COPY pan_verification/ ./pan_verification/
 
 # Pre-create runtime directories so volume mounts work cleanly
 RUN mkdir -p downloads data
