@@ -15,7 +15,7 @@ from pan_verification.models.schemas import (
     BulkPanUploadResponse,
     BulkPanStatusResponse,
     ErrorResponse,
-    RefreshCaptchaRequest,
+    ResendCaptchaRequest,
 )
 from pan_verification.services.login_service import TracesLoginService
 from pan_verification.services.pan_service import PanVerificationService
