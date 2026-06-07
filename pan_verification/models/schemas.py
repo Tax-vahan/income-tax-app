@@ -36,6 +36,9 @@ class LoginResponse(BaseModel):
     success: bool = Field(..., description="Whether login was successful")
     session_id: str | None = Field(None, description="Session ID if successful")
     logged_in: bool = Field(..., description="Whether user is logged in")
+    
+class RefreshCaptchaRequest(BaseModel):
+    session_id: str
 
 
 class PanVerifyRequest(BaseModel):

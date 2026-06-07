@@ -14,7 +14,8 @@ from pan_verification.models.schemas import (
     SessionStatusResponse,
     BulkPanUploadResponse,
     BulkPanStatusResponse,
-    ErrorResponse
+    ErrorResponse,
+    RefreshCaptchaRequest,
 )
 from pan_verification.services.login_service import TracesLoginService
 from pan_verification.services.pan_service import PanVerificationService
@@ -26,7 +27,7 @@ from pan_verification.utils.validators import (
     validate_password,
     validate_captcha,
     validate_form_type,
-    validate_session_id
+    validate_session_id,
 )
 
 logger = get_logger(__name__)
@@ -45,10 +46,11 @@ def get_pan_service() -> PanVerificationService:
 # AUTHENTICATION
 # ===========================================================================
 
+
 @router.post("/login/init", response_model=CaptchaResponse, tags=["Authentication"])
 async def login_init(
     request: LoginInitRequest,
-    login_service: TracesLoginService = Depends(get_login_service)
+    login_service: TracesLoginService = Depends(get_login_service),
 ):
     """
     Get captcha image for login (Step 1 of 2-step flow).
@@ -80,7 +82,9 @@ async def login_init(
         raise HTTPException(status_code=400, detail="Validation error")
 
     try:
-        result = await login_service.init_login(tan=request.tan, password=request.password)
+        result = await login_service.init_login(
+            tan=request.tan, password=request.password
+        )
         logger.info(f"Captcha retrieved for session {result['session_id']}")
         return result
     except Exception as e:
@@ -91,7 +95,7 @@ async def login_init(
 @router.post("/login/complete", response_model=LoginResponse, tags=["Authentication"])
 async def login_complete(
     request: LoginCompleteRequest,
-    login_service: TracesLoginService = Depends(get_login_service)
+    login_service: TracesLoginService = Depends(get_login_service),
 ):
     """
     Complete login with captcha (Step 2 of 2-step flow).
@@ -109,7 +113,9 @@ async def login_complete(
     **On success:** Returns session_id for PAN verification endpoints
     **On failure:** If captcha is wrong, call /login/init again for new captcha
     """
-    logger.info(f"POST /login/complete - Completing login for session {request.session_id}")
+    logger.info(
+        f"POST /login/complete - Completing login for session {request.session_id}"
+    )
 
     try:
         is_valid, msg = validate_session_id(request.session_id)
@@ -138,7 +144,7 @@ async def login_complete(
             session_id=request.session_id,
             tan=request.tan,
             password=request.password,
-            captcha=request.captcha
+            captcha=request.captcha,
         )
         logger.info(f"Login successful for session {request.session_id}")
         return result
@@ -147,19 +153,61 @@ async def login_complete(
         raise
 
 
+@router.post(
+    "/captcha/refresh", response_model=CaptchaResponse, tags=["Authentication"]
+)
+async def refresh_captcha(
+    request: RefreshCaptchaRequest,
+    login_service: TracesLoginService = Depends(get_login_service),
+):
+    """
+    Refresh captcha for an existing login session.
+
+    Returns:
+    - session_id
+    - captcha_base64
+    - captcha_id
+    - message
+    """
+
+    logger.info(
+        f"POST /captcha/refresh - Refreshing captcha for session {request.session_id}"
+    )
+
+    try:
+        is_valid, msg = validate_session_id(request.session_id)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid session ID: {msg}")
+
+        result = await login_service.refresh_captcha(session_id=request.session_id)
+
+        logger.info(f"Captcha refreshed for session {request.session_id}")
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error refreshing captcha: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to refresh captcha")
+
+
 # ===========================================================================
 # PAN VERIFICATION
 # ===========================================================================
 
+
 @router.post("/pan/verify", response_model=PanVerifyResponse, tags=["PAN Verification"])
 async def verify_pan(
     request: PanVerifyRequest,
-    pan_service: PanVerificationService = Depends(get_pan_service)
+    pan_service: PanVerificationService = Depends(get_pan_service),
 ):
     """
     Verify a single PAN number on TRACES portal.
     """
-    logger.info(f"POST /pan/verify - Verifying PAN {request.pan} for session {request.session_id}")
+    logger.info(
+        f"POST /pan/verify - Verifying PAN {request.pan} for session {request.session_id}"
+    )
 
     try:
         is_valid, msg = validate_session_id(request.session_id)
@@ -181,9 +229,7 @@ async def verify_pan(
 
     try:
         result = await pan_service.verify_pan(
-            session_id=request.session_id,
-            pan=request.pan,
-            form_type=request.form_type
+            session_id=request.session_id, pan=request.pan, form_type=request.form_type
         )
         return result
     except Exception as e:
@@ -191,11 +237,15 @@ async def verify_pan(
         raise
 
 
-@router.post("/pan/bulk-upload", response_model=BulkPanUploadResponse, tags=["Bulk PAN Verification"])
+@router.post(
+    "/pan/bulk-upload",
+    response_model=BulkPanUploadResponse,
+    tags=["Bulk PAN Verification"],
+)
 async def bulk_upload_pan(
     session_id: str = Form(..., description="Active session ID from /login/complete"),
     file: UploadFile = File(..., description="CSV file containing PAN numbers"),
-    pan_service: PanVerificationService = Depends(get_pan_service)
+    pan_service: PanVerificationService = Depends(get_pan_service),
 ):
     """
     Upload a CSV file of PAN numbers to TRACES for bulk verification.
@@ -215,7 +265,7 @@ async def bulk_upload_pan(
         if not is_valid:
             raise HTTPException(status_code=400, detail=f"Invalid session ID: {msg}")
 
-        if not file.filename or not file.filename.endswith('.csv'):
+        if not file.filename or not file.filename.endswith(".csv"):
             raise HTTPException(status_code=400, detail="Only CSV files are accepted")
 
         csv_bytes = await file.read()
@@ -229,9 +279,7 @@ async def bulk_upload_pan(
 
     try:
         result = await pan_service.bulk_upload_pan(
-            session_id=session_id,
-            csv_bytes=csv_bytes,
-            filename=file.filename
+            session_id=session_id, csv_bytes=csv_bytes, filename=file.filename
         )
         logger.info(f"Bulk upload successful, token: {result['token_number']}")
         return result
@@ -240,11 +288,15 @@ async def bulk_upload_pan(
         raise
 
 
-@router.get("/pan/status/{token_number}", response_model=BulkPanStatusResponse, tags=["Bulk PAN Verification"])
+@router.get(
+    "/pan/status/{token_number}",
+    response_model=BulkPanStatusResponse,
+    tags=["Bulk PAN Verification"],
+)
 async def pan_status(
     token_number: str = Path(..., description="Token number from /pan/bulk-upload"),
     session_id: str = "",
-    pan_service: PanVerificationService = Depends(get_pan_service)
+    pan_service: PanVerificationService = Depends(get_pan_service),
 ):
     """
     Check if the bulk PAN verification file is ready to download.
@@ -255,12 +307,13 @@ async def pan_status(
     logger.info(f"GET /pan/status/{token_number}")
 
     if not session_id:
-        raise HTTPException(status_code=400, detail="session_id query parameter is required")
+        raise HTTPException(
+            status_code=400, detail="session_id query parameter is required"
+        )
 
     try:
         result = await pan_service.check_download_status(
-            session_id=session_id,
-            token_number=token_number
+            session_id=session_id, token_number=token_number
         )
         return result
     except Exception as e:
@@ -272,7 +325,7 @@ async def pan_status(
 async def pan_download(
     token_number: str = Path(..., description="Token number from /pan/bulk-upload"),
     session_id: str = "",
-    pan_service: PanVerificationService = Depends(get_pan_service)
+    pan_service: PanVerificationService = Depends(get_pan_service),
 ):
     """
     Download the generated bulk PAN verification file from TRACES.
@@ -283,17 +336,18 @@ async def pan_download(
     logger.info(f"GET /pan/download/{token_number}")
 
     if not session_id:
-        raise HTTPException(status_code=400, detail="session_id query parameter is required")
+        raise HTTPException(
+            status_code=400, detail="session_id query parameter is required"
+        )
 
     try:
         file_bytes, filename = await pan_service.download_pan_file(
-            session_id=session_id,
-            token_number=token_number
+            session_id=session_id, token_number=token_number
         )
         return StreamingResponse(
             io.BytesIO(file_bytes),
             media_type="application/octet-stream",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
     except Exception as e:
         logger.error(f"Error downloading PAN file: {str(e)}", exc_info=True)
@@ -304,25 +358,32 @@ async def pan_download(
 # FULLY AUTOMATED PAN VERIFICATION (Auto-Login & OCR)
 # ===========================================================================
 
-async def _get_auto_session_id(tan: str, password: str, login_service: TracesLoginService) -> str:
+
+async def _get_auto_session_id(
+    tan: str, password: str, login_service: TracesLoginService
+) -> str:
     """Helper to get an existing session by TAN or auto-login if needed."""
     session_manager = await get_session_manager()
     session_id = await session_manager.get_session_by_tan(tan)
     if session_id:
         logger.info(f"Reusing existing session {session_id} for TAN {tan}")
         return session_id
-        
+
     logger.info(f"No active session for TAN {tan}. Triggering auto-login...")
     return await login_service.auto_login(tan, password)
 
 
-@router.post("/pan/auto/bulk-upload", response_model=BulkPanUploadResponse, tags=["Fully Automated"])
+@router.post(
+    "/pan/auto/bulk-upload",
+    response_model=BulkPanUploadResponse,
+    tags=["Fully Automated"],
+)
 async def auto_bulk_upload_pan(
     tan: str = Form(..., description="Tax Account Number"),
     password: str = Form(..., description="Login Password"),
     file: UploadFile = File(..., description="CSV file containing PAN numbers"),
     login_service: TracesLoginService = Depends(get_login_service),
-    pan_service: PanVerificationService = Depends(get_pan_service)
+    pan_service: PanVerificationService = Depends(get_pan_service),
 ):
     """
     Fully automated bulk PAN upload.
@@ -330,12 +391,10 @@ async def auto_bulk_upload_pan(
     """
     try:
         session_id = await _get_auto_session_id(tan, password, login_service)
-        
+
         csv_bytes = await file.read()
         result = await pan_service.bulk_upload_pan(
-            session_id=session_id,
-            csv_bytes=csv_bytes,
-            filename=file.filename
+            session_id=session_id, csv_bytes=csv_bytes, filename=file.filename
         )
         return result
     except Exception as e:
@@ -343,57 +402,79 @@ async def auto_bulk_upload_pan(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/pan/auto/status/{token_number}", response_model=BulkPanStatusResponse, tags=["Fully Automated"])
+@router.get(
+    "/pan/auto/status/{token_number}",
+    response_model=BulkPanStatusResponse,
+    tags=["Fully Automated"],
+)
 async def auto_pan_status(
-    token_number: str = Path(..., description="Token number from /pan/auto/bulk-upload"),
+    token_number: str = Path(
+        ..., description="Token number from /pan/auto/bulk-upload"
+    ),
     tan: str = "",
     password: str = "",
     login_service: TracesLoginService = Depends(get_login_service),
-    pan_service: PanVerificationService = Depends(get_pan_service)
+    pan_service: PanVerificationService = Depends(get_pan_service),
 ):
     """Check status automatically."""
     try:
         if not tan or not password:
-            raise HTTPException(status_code=400, detail="tan and password query parameters are required")
-            
+            raise HTTPException(
+                status_code=400, detail="tan and password query parameters are required"
+            )
+
         session_id = await _get_auto_session_id(tan, password, login_service)
-        return await pan_service.check_download_status(session_id=session_id, token_number=token_number)
+        return await pan_service.check_download_status(
+            session_id=session_id, token_number=token_number
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/pan/auto/download/{token_number}", tags=["Fully Automated"])
 async def auto_pan_download(
-    token_number: str = Path(..., description="Token number from /pan/auto/bulk-upload"),
+    token_number: str = Path(
+        ..., description="Token number from /pan/auto/bulk-upload"
+    ),
     tan: str = "",
     password: str = "",
     login_service: TracesLoginService = Depends(get_login_service),
-    pan_service: PanVerificationService = Depends(get_pan_service)
+    pan_service: PanVerificationService = Depends(get_pan_service),
 ):
     """Download automatically."""
     try:
         if not tan or not password:
-            raise HTTPException(status_code=400, detail="tan and password query parameters are required")
-            
+            raise HTTPException(
+                status_code=400, detail="tan and password query parameters are required"
+            )
+
         session_id = await _get_auto_session_id(tan, password, login_service)
-        file_bytes, filename = await pan_service.download_pan_file(session_id=session_id, token_number=token_number)
-        
+        file_bytes, filename = await pan_service.download_pan_file(
+            session_id=session_id, token_number=token_number
+        )
+
         return StreamingResponse(
             io.BytesIO(file_bytes),
             media_type="application/octet-stream",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ===========================================================================
 # SESSION MANAGEMENT
 # ===========================================================================
 
-@router.get("/session/status/{session_id}", response_model=SessionStatusResponse, tags=["Session Management"])
+
+@router.get(
+    "/session/status/{session_id}",
+    response_model=SessionStatusResponse,
+    tags=["Session Management"],
+)
 async def get_session_status(
     session_id: str = Path(..., description="The session ID to check"),
-    login_service: TracesLoginService = Depends(get_login_service)
+    login_service: TracesLoginService = Depends(get_login_service),
 ):
     """Check if a session is active and valid."""
     logger.debug(f"GET /session/status/{session_id}")
@@ -416,4 +497,7 @@ async def get_session_status(
 @router.get("/health", tags=["Monitoring"])
 async def health_check():
     """Health check endpoint for monitoring."""
-    return {"status": "healthy", "message": "TRACES PAN Verification Service is running"}
+    return {
+        "status": "healthy",
+        "message": "TRACES PAN Verification Service is running",
+    }
