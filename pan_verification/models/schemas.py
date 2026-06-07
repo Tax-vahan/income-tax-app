@@ -37,7 +37,7 @@ class LoginResponse(BaseModel):
     session_id: str | None = Field(None, description="Session ID if successful")
     logged_in: bool = Field(..., description="Whether user is logged in")
     
-class RefreshCaptchaRequest(BaseModel):
+class ResendCaptchaRequest(BaseModel):
     session_id: str
 
 

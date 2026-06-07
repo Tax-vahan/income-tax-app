@@ -1,0 +1,16 @@
+name: Pipeline to trigger Backend Python tds api and pan verification Service
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install sshpass
+        run: sudo apt-get update -y && sudo apt-get install sshpass -y
+
+      - name: SSH into dev env
+        run: sshpass -p 'k6gGfM8m@8U1n@' ssh -o StrictHostKeyChecking=no root@150.241.244.116 "cd /root/tds_challan/income-tax-app && bash build.sh"

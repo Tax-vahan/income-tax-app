@@ -154,14 +154,14 @@ async def login_complete(
 
 
 @router.post(
-    "/captcha/refresh", response_model=CaptchaResponse, tags=["Authentication"]
+    "/captcha/resend", response_model=CaptchaResponse, tags=["Authentication"]
 )
-async def refresh_captcha(
-    request: RefreshCaptchaRequest,
+async def resend_captcha(
+    request: ResendCaptchaRequest,
     login_service: TracesLoginService = Depends(get_login_service),
 ):
     """
-    Refresh captcha for an existing login session.
+    Resend captcha for an existing login session.
 
     Returns:
     - session_id
@@ -171,7 +171,7 @@ async def refresh_captcha(
     """
 
     logger.info(
-        f"POST /captcha/refresh - Refreshing captcha for session {request.session_id}"
+        f"POST /captcha/resend - Resending captcha for session {request.session_id}"
     )
 
     try:
@@ -179,17 +179,17 @@ async def refresh_captcha(
         if not is_valid:
             raise HTTPException(status_code=400, detail=f"Invalid session ID: {msg}")
 
-        result = await login_service.refresh_captcha(session_id=request.session_id)
+        result = await login_service.resend_captcha(session_id=request.session_id)
 
-        logger.info(f"Captcha refreshed for session {request.session_id}")
+        logger.info(f"Captcha resent for session {request.session_id}")
 
         return result
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error refreshing captcha: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to refresh captcha")
+        logger.error(f"Error resending captcha: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to resend captcha")
 
 
 # ===========================================================================
