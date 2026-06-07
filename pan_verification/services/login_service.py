@@ -10,6 +10,7 @@ from pan_verification.utils.errors import (
     SessionExpiredError,
     PortalTimeoutError,
     InvalidCredentialsError,
+    CaptchaFailureError,
 )
 
 logger = get_logger(__name__)
@@ -107,7 +108,7 @@ class TracesLoginService:
 
             return {"success": True, "session_id": session_id, "logged_in": True}
 
-        except (InvalidCredentialsError, SessionExpiredError):
+        except (InvalidCredentialsError, SessionExpiredError, CaptchaFailureError):
             raise
         except Exception as e:
             logger.error(f"Login failed for session {session_id}: {str(e)}")

@@ -44,7 +44,7 @@ class PanBulkAutomation:
             if not access_token or not user_id:
                 raise NavigationFailureError("Missing access token or TAN for API upload.")
 
-            api_url = f"https://traces-app.tdscpc.gov.in/validationservice/api/pan-verify/submit?userId={user_id}"
+            api_url = "https://traces-app.tdscpc.gov.in/validationservice/api/pan-verify/submit"
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "*/*"
@@ -56,6 +56,7 @@ class PanBulkAutomation:
                 headers=headers,
                 timeout=120000,
                 multipart={
+                    "userId": user_id,
                     "file": {
                         "name": filename,
                         "mimeType": "text/csv",
