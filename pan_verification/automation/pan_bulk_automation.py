@@ -47,7 +47,10 @@ class PanBulkAutomation:
             api_url = "https://traces-app.tdscpc.gov.in/validationservice/api/pan-verify/submit"
             headers = {
                 "Authorization": f"Bearer {access_token}",
-                "Accept": "*/*"
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Origin": "https://traces.tdscpc.gov.in",
+                "Referer": "https://traces.tdscpc.gov.in/"
             }
             
             # Send the multipart form data using context.request
@@ -102,7 +105,10 @@ class PanBulkAutomation:
             api_url = f"https://traces-app.tdscpc.gov.in/validationservice/api/pan-verify/filter?userId={user_id}&tokenNo={token_number}&page=0&size=10&fromDate=&toDate=&status="
             headers = {
                 "Authorization": f"Bearer {access_token}",
-                "Accept": "*/*"
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Origin": "https://traces.tdscpc.gov.in",
+                "Referer": "https://traces.tdscpc.gov.in/"
             }
             
             response = await context.request.get(api_url, headers=headers)
@@ -154,7 +160,10 @@ class PanBulkAutomation:
             api_url = f"https://traces-app.tdscpc.gov.in/validationservice/api/pan-verify/download-by-token?tokenNo={token_number}"
             headers = {
                 "Authorization": f"Bearer {access_token}",
-                "Accept": "*/*"
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Origin": "https://traces.tdscpc.gov.in",
+                "Referer": "https://traces.tdscpc.gov.in/"
             }
 
             response = await context.request.get(api_url, headers=headers)
