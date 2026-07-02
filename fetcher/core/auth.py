@@ -335,7 +335,7 @@ def login(tan: str, password: str, proxy: str = "") -> Tuple:
 
 # ── Payment History navigation ─────────────────────────────────────────────────
 
-def open_payment_history_ui(driver) -> bool:
+def open_payment_history_ui(driver, cfg: dict = None) -> bool:
     """
     Navigate to e-File → e-Pay Tax → Payment History.
     This triggers Angular's paymenthistory API call which CDP intercepts.
@@ -383,8 +383,18 @@ def open_payment_history_ui(driver) -> bool:
                 break
             log.info("  Act Selection dialog (attempt %d/3) ...", attempt + 1)
             try:
+                target_act = "Income-tax Act, 1961"
+                if cfg and cfg.get("FROM_DATE"):
+                    try:
+                        from datetime import datetime
+                        dt = datetime.strptime(cfg["FROM_DATE"], "%d/%m/%Y")
+                        if dt >= datetime(2026, 4, 1):
+                            target_act = "Income-tax Act, 2025"
+                    except Exception as e:
+                        log.warning("Could not parse FROM_DATE %s: %s", cfg["FROM_DATE"], e)
+
                 act_radio = W.until(EC.presence_of_element_located(
-                    (By.XPATH, "//label[contains(.,'Income-tax Act, 1961')]")
+                    (By.XPATH, f"//label[contains(.,'{target_act}')]")
                 ))
                 driver.execute_script("arguments[0].click();", act_radio)
                 time.sleep(0.5)
@@ -655,7 +665,7 @@ def get_session(cfg: dict) -> Tuple:
     except Exception:
         log.warning("Dashboard did not render e-File menu within 30s — proceeding anyway")
 
-    if not open_payment_history_ui(driver):
+    if not open_payment_history_ui(driver, cfg):
         log.error("Payment History navigation failed")
         cdp_capture.stop()
         driver.quit()
