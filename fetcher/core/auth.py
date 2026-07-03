@@ -393,9 +393,23 @@ def open_payment_history_ui(driver, cfg: dict = None) -> bool:
                     except Exception as e:
                         log.warning("Could not parse FROM_DATE %s: %s", cfg["FROM_DATE"], e)
 
-                act_radio = W.until(EC.presence_of_element_located(
-                    (By.XPATH, f"//label[contains(.,'{target_act}')]")
-                ))
+                try:
+                    act_radio = WebDriverWait(driver, 5).until(EC.presence_of_element_located(
+                        (By.XPATH, f"//label[contains(.,'{target_act}')]")
+                    ))
+                except Exception:
+                    # Portal may only offer a single act option (e.g. the old act
+                    # no longer selectable post cutover) — fall back to whatever
+                    # act option is actually present rather than assuming both exist.
+                    log.warning(
+                        "  '%s' option not found on page — falling back to "
+                        "whichever act option is available", target_act
+                    )
+                    act_radio = W.until(EC.presence_of_element_located(
+                        (By.XPATH, "//label[contains(.,'Income-tax Act')]")
+                    ))
+                    target_act = act_radio.text.strip()
+                log.info("  Selecting act option: %s", target_act)
                 driver.execute_script("arguments[0].click();", act_radio)
                 time.sleep(0.5)
                 cont_btn = W.until(EC.element_to_be_clickable(
