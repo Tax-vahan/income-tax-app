@@ -201,9 +201,13 @@ def run(
     all_challans: list = []
 
     # Strategy A — steal the response Angular already loaded (zero cost)
+    # Matched on the full-dump shape (size=10000) so this doesn't pick up
+    # the small paginated size=5 call fired when the Payment History tab
+    # first renders — and get_response_body() prefers the most recent
+    # match, so this reflects the act actually confirmed in the dialog.
     if cdp_capture is not None and driver is not None:
         body = cdp_capture.get_response_body(
-            "/paymenthistory", driver, timeout=5
+            "/paymenthistory?pageNum=0&size=10000", driver, timeout=5
         )
         if body is not None:
             items, _ = _parse_challan_list(body)

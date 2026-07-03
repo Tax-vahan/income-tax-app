@@ -172,12 +172,18 @@ class CDPCapture:
 
         body_contains — only accept a response whose POST body contains
                         this string (useful for matching a specific CRN).
+
+        When multiple requests match, the MOST RECENTLY captured one is
+        used (not the first) — e.g. the Angular app re-issues the
+        paymenthistory call once the user's Act selection changes, so the
+        first captured response would still reflect the stale pre-selection
+        act rather than the one actually confirmed.
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
             target_id = target_url = None
             with self._lock:
-                for cap in self._captured:
+                for cap in reversed(self._captured):
                     if (url_fragment in cap["url"]
                             and cap["requestId"] in self._finished
                             and cap["requestId"] not in self._consumed):
@@ -208,6 +214,25 @@ class CDPCapture:
             time.sleep(0.5)
 
         return None
+
+    def discard_captured(self, url_fragment: str) -> int:
+        """
+        Mark all currently-captured requests matching url_fragment as
+        already consumed, without retrieving their bodies.
+
+        Use this to invalidate stale pre-selection captures (e.g. the
+        paymenthistory dump Angular fires automatically before the user
+        has confirmed which Income Tax Act applies) so a later
+        get_response_body() call is forced to wait for a fresh request
+        rather than silently reusing outdated data.
+        """
+        with self._lock:
+            discarded = 0
+            for cap in self._captured:
+                if url_fragment in cap["url"] and cap["requestId"] not in self._consumed:
+                    self._consumed.add(cap["requestId"])
+                    discarded += 1
+            return discarded
 
     def get_all_captured(self) -> list[dict]:
         with self._lock:

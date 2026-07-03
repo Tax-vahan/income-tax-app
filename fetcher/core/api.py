@@ -13,7 +13,7 @@ import logging
 
 import requests
 
-from ..utils.config import BASE, API_BASE, CONFIG
+from ..utils.config import BASE, API_BASE, CONFIG, act_type_for_date
 from .retry import with_retry
 
 log = logging.getLogger("TDS")
@@ -57,7 +57,7 @@ def fetch_payment_history(
         "header": {"formName": "PO-03-PYMNT"},
         "formData": {
             "pan":            tan,
-            "actType":        "O",
+            "actType":        act_type_for_date(from_date),
             "loggedInUserID": tan,
             "fromDate":       from_date,
             "toDate":         to_date,

@@ -28,7 +28,7 @@ import pathlib
 import requests
 from typing import Optional, Tuple
 
-from ..utils.config import BASE, API_BASE, USER_AGENT
+from ..utils.config import BASE, API_BASE, USER_AGENT, act_type_for_date
 from .cdp import CDPCapture
 
 log = logging.getLogger("TDS")
@@ -335,7 +335,7 @@ def login(tan: str, password: str, proxy: str = "") -> Tuple:
 
 # ── Payment History navigation ─────────────────────────────────────────────────
 
-def open_payment_history_ui(driver, cfg: dict = None) -> bool:
+def open_payment_history_ui(driver, cfg: dict = None, cdp_capture=None) -> bool:
     """
     Navigate to e-File → e-Pay Tax → Payment History.
     This triggers Angular's paymenthistory API call which CDP intercepts.
@@ -383,15 +383,8 @@ def open_payment_history_ui(driver, cfg: dict = None) -> bool:
                 break
             log.info("  Act Selection dialog (attempt %d/3) ...", attempt + 1)
             try:
-                target_act = "Income-tax Act, 1961"
-                if cfg and cfg.get("FROM_DATE"):
-                    try:
-                        from datetime import datetime
-                        dt = datetime.strptime(cfg["FROM_DATE"], "%d/%m/%Y")
-                        if dt >= datetime(2026, 4, 1):
-                            target_act = "Income-tax Act, 2025"
-                    except Exception as e:
-                        log.warning("Could not parse FROM_DATE %s: %s", cfg["FROM_DATE"], e)
+                act_code   = act_type_for_date(cfg.get("FROM_DATE") if cfg else None)
+                target_act = "Income-tax Act, 2025" if act_code == "N" else "Income-tax Act, 1961"
 
                 try:
                     act_radio = WebDriverWait(driver, 5).until(EC.presence_of_element_located(
@@ -426,6 +419,15 @@ def open_payment_history_ui(driver, cfg: dict = None) -> bool:
                     )
                 except Exception:
                     pass
+                # Angular fires a paymenthistory dump automatically as soon as
+                # e-Pay Tax loads — i.e. BEFORE this dialog is confirmed — so
+                # any such capture reflects the stale/previous act, not the
+                # one just selected. Discard it so the challan-list fetch is
+                # forced to use a request issued after this point.
+                if cdp_capture is not None:
+                    n = cdp_capture.discard_captured("/paymenthistory")
+                    if n:
+                        log.info("  Discarded %d stale pre-selection paymenthistory capture(s)", n)
             except Exception as exc:
                 log.warning("  Act selection error: %s", exc)
 
@@ -679,7 +681,7 @@ def get_session(cfg: dict) -> Tuple:
     except Exception:
         log.warning("Dashboard did not render e-File menu within 30s — proceeding anyway")
 
-    if not open_payment_history_ui(driver, cfg):
+    if not open_payment_history_ui(driver, cfg, cdp_capture):
         log.error("Payment History navigation failed")
         cdp_capture.stop()
         driver.quit()
