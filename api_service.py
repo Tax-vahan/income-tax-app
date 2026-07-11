@@ -579,6 +579,26 @@ async def fetch_entity(req: EntityRequest):
             "message": f"An entity job for TAN {req.tan} is already {existing['status']}.",
         }
 
+    # Optimization: if the profile already exists and is fresh (< 7 days), don't fetch it again
+    profile_path = os.path.join(DATA_DIR, f"{req.tan}_entity_profile.json")
+    if os.path.exists(profile_path):
+        import time
+        if time.time() - os.path.getmtime(profile_path) < 7 * 86400:
+            job_id = str(uuid.uuid4())
+            with jobs_lock:
+                jobs[job_id] = {
+                    "id": job_id,
+                    "tan": req.tan,
+                    "type": "entity",
+                    "status": "completed",
+                    "created_at": datetime.now().isoformat(),
+                    "started_at": datetime.now().isoformat(),
+                    "completed_at": datetime.now().isoformat(),
+                    "result": {"json_file": profile_path}
+                }
+            _save_jobs()
+            return {"job_id": job_id, "status": "completed", "queue_position": 0}
+
     pending = _pending_count()
     if pending >= _MAX_QUEUED:
         raise HTTPException(

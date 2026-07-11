@@ -154,23 +154,12 @@ _EPOCH_FIELDS = (
 
 def _save_entity_profile(profile: dict, cfg: dict) -> None:
     """
-    Normalise epoch-ms timestamps to ISO strings, then write the profile
-    to  data/<TAN>_entity_profile.json  (same data dir as the session file).
+    Write the raw profile to data/<TAN>_entity_profile.json
     """
-    from datetime import datetime, timezone
     import os
-
+    
     out = profile.copy()
-    for field in _EPOCH_FIELDS:
-        v = out.get(field)
-        if v is not None:
-            try:
-                out[field] = datetime.fromtimestamp(
-                    float(v) / 1000, tz=timezone.utc
-                ).strftime("%d/%m/%Y %H:%M:%S UTC")
-            except Exception:
-                pass
-
+    
     data_dir  = os.path.dirname(cfg.get("SESSION_FILE", "data/s.json"))
     json_path = os.path.join(data_dir, f"{cfg['TAN']}_entity_profile.json")
     os.makedirs(data_dir, exist_ok=True)
