@@ -56,7 +56,7 @@ CONFIG = {
 
     # ── Fetch tuning ─────────────────────────────────────────────────
     "PAGE_SIZE":    10000,   # challans per API page
-    "TIMEOUT":      25,      # HTTP request timeout (seconds) — fail fast, then retry
+    "TIMEOUT":      60,      # HTTP request timeout (seconds) — fail fast, then retry
     "WORKERS":      25,      # ThreadPoolExecutor max workers (I/O-bound, so higher is fine)
     "BATCH_SIZE":   20,      # detail-fetch batch size (was 5 — bigger = less overhead)
 
@@ -65,7 +65,8 @@ CONFIG = {
     "DETAIL_MODE":  "AUTO",  # AUTO | ALWAYS | SKIP
 
     # ── Reliability ───────────────────────────────────────────────────
-    "RETRY_COUNT":  2,       # jitter makes 2 retries sufficient (was 3)
+    "RETRY_COUNT":  3,       # jitter makes 3 retries sufficient
+
 
     # ── Network ───────────────────────────────────────────────────────
     "PROXY":        "",      # e.g. "socks5://127.0.0.1:1080"

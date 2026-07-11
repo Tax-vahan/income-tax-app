@@ -217,9 +217,11 @@ def run_fetch(cfg_override: dict | None = None) -> tuple:
         profile = None
         if cdp_capture is not None and driver is not None:
             profile = cdp_capture.get_response_body("/saveEntity", driver, timeout=5)
+            if profile and "orgName" not in profile:
+                profile = None
         if profile is None:
             profile = fetch_entity_profile(session, cfg["TAN"])
-        if profile:
+        if profile and "orgName" in profile:
             _save_entity_profile(profile, cfg)
     except Exception as exc:
         log.warning("Entity profile fetch failed (non-fatal): %s", exc)

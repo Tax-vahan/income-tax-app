@@ -320,9 +320,11 @@ def _run_entity_job(job_id: str, req: EntityRequest) -> None:
         profile = None
         if cdp_capture is not None and driver is not None:
             profile = cdp_capture.get_response_body("/saveEntity", driver, timeout=10)
+            if profile and "orgName" not in profile:
+                profile = None
         if profile is None:
             profile = fetch_entity_profile(session, req.tan)
-        if profile is None:
+        if profile is None or "orgName" not in profile:
             raise RuntimeError("Could not retrieve entity profile via CDP or API")
 
         _save_entity_profile(profile, cfg)
