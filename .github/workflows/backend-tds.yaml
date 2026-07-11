@@ -1,16 +1,141 @@
-name: Pipeline to trigger Backend Python tds api and pan verification Service
+name: Build and Deploy Taxvahan Tds Api Service
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: taxvahan-tds-pan-api
+  COMPOSE_SERVICE: taxvahan-tds-pan-api
+  DEPLOY_DIR: /root/taxvahan-update
+  COMPOSE_FILE: tds-api-compose.yaml
 
 jobs:
-  build:
+  build-and-push:
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Install sshpass
-        run: sudo apt-get update -y && sudo apt-get install sshpass -y
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
 
-      - name: SSH into dev env
-        run: sshpass -p 'k6gGfM8m@8U1n@' ssh -o StrictHostKeyChecking=no root@150.241.244.116 "cd /root/tds_challan/income-tax-app && bash build.sh"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate image tag
+        id: vars
+        shell: bash
+        run: |
+          IMAGE_TAG="${GITHUB_SHA::7}"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Building image with tag: ${IMAGE_TAG}"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GH_USER }}
+          password: ${{ secrets.GH_PAT_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ secrets.GH_USER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ secrets.GH_USER }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy Frontend to Production
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Deploy Taxvahan Frontend to Server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: 22
+          script: |
+            set -e
+
+            IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+            IMAGE="ghcr.io/${{ secrets.GH_USER }}/${{ env.IMAGE_NAME }}"
+            DEPLOY_DIR="${{ env.DEPLOY_DIR }}"
+            COMPOSE_FILE="${{ env.COMPOSE_FILE }}"
+            SERVICE="${{ env.COMPOSE_SERVICE }}"
+
+            echo "========================================"
+            echo "Deploying Taxvahan Frontend"
+            echo "Image: ${IMAGE}"
+            echo "Image tag: ${IMAGE_TAG}"
+            echo "========================================"
+
+            cd "${DEPLOY_DIR}"
+
+            echo "Logging in to GitHub Container Registry..."
+
+            echo "${{ secrets.GH_PAT_TOKEN }}" | docker login ghcr.io \
+              -u "${{ secrets.GH_USER }}" \
+              --password-stdin
+
+            echo "Updating Docker Compose image tag..."
+
+            sed -i -E \
+              "s|(image:[[:space:]]*${IMAGE}:).*|\1${IMAGE_TAG}|" \
+              "${COMPOSE_FILE}"
+
+            echo "Verifying updated image..."
+
+            grep "image:" "${COMPOSE_FILE}"
+
+            if ! grep -q "${IMAGE}:${IMAGE_TAG}" "${COMPOSE_FILE}"; then
+              echo "ERROR: Docker Compose image tag was not updated"
+              exit 1
+            fi
+
+            echo "Pulling Docker image..."
+
+            docker compose \
+              -f "${COMPOSE_FILE}" \
+              pull "${SERVICE}"
+
+            echo "Starting Taxvahan Frontend..."
+
+            docker compose \
+              -f "${COMPOSE_FILE}" \
+              up -d --no-deps "${SERVICE}"
+
+            echo "Waiting for container startup..."
+
+            sleep 2
+
+            echo "Container status..."
+
+            docker compose \
+              -f "${COMPOSE_FILE}" \
+              ps "${SERVICE}"
+
+            echo "Cleaning unused Docker images..."
+
+            docker image prune -f
+
+            echo "========================================"
+            echo "Taxvahan Frontend deployment completed"
+            echo "Image: ${IMAGE}:${IMAGE_TAG}"
+            echo "========================================"
