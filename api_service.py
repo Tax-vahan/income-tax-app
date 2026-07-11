@@ -319,7 +319,7 @@ def _run_entity_job(job_id: str, req: EntityRequest) -> None:
 
         profile = None
         if cdp_capture is not None and driver is not None:
-            profile = cdp_capture.get_response_body("/saveEntity", driver, timeout=10)
+            profile = cdp_capture.get_response_body("/servicesapi/auth/saveEntity", driver, timeout=15)
             if profile and "orgName" not in profile:
                 profile = None
         if profile is None:
@@ -452,6 +452,43 @@ async def get_job(job_id: str):
     if job["status"] == "pending":
         job["queue_position"] = _queue_position(job_id)
     return job
+
+
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
+
+@app.websocket("/tds/api/v1/jobs/{job_id}/ws")
+async def job_websocket(websocket: WebSocket, job_id: str):
+    """
+    WebSocket endpoint for the frontend to receive real-time updates on a job's status.
+    The frontend won't have to guess or spam HTTP polling requests.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            if job_id not in jobs:
+                await websocket.send_json({"status": "not_found", "message": "Job not found"})
+                break
+            
+            job = jobs[job_id]
+            msg = {"status": job["status"]}
+            if job["status"] == "pending":
+                msg["queue_position"] = _queue_position(job_id)
+            elif job["status"] == "completed":
+                msg["result"] = job.get("result", {})
+            elif job["status"] == "failed":
+                msg["error"] = "Job failed during execution."
+                
+            await websocket.send_json(msg)
+            
+            if job["status"] in ["completed", "failed"]:
+                break
+                
+            # Check for updates every 2 seconds
+            await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for job {job_id}")
+
 
 
 @app.get("/tds/api/v1/jobs/{job_id}/download")

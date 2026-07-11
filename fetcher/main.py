@@ -216,7 +216,7 @@ def run_fetch(cfg_override: dict | None = None) -> tuple:
     try:
         profile = None
         if cdp_capture is not None and driver is not None:
-            profile = cdp_capture.get_response_body("/saveEntity", driver, timeout=5)
+            profile = cdp_capture.get_response_body("/servicesapi/auth/saveEntity", driver, timeout=5)
             if profile and "orgName" not in profile:
                 profile = None
         if profile is None:
