@@ -8,6 +8,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
+from typing import Optional
 from pydantic import BaseModel
 
 from fetcher.main import run_fetch
