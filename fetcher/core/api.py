@@ -52,7 +52,6 @@ def fetch_payment_history(
     url = (
         API_BASE
         + "/paymentapi/auth/challan/paymenthistory"
-        + f"?pageNum={page_num}&size={page_size}"
     )
     payload = {
         "header": {"formName": "PO-03-PYMNT"},
