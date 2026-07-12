@@ -210,10 +210,12 @@ def run(
             "/paymenthistory", driver, timeout=5
         )
         if body is not None:
-            items, _ = _parse_challan_list(body)
-            if items:
+            items, total = _parse_challan_list(body)
+            if items and len(items) >= total:
                 log.info("  Strategy A (CDP body intercept): %d challans", len(items))
                 all_challans = items
+            elif items:
+                log.info("  Strategy A got partial list (%d/%d), falling back to API ...", len(items), total)
 
     # Strategy B — paginated requests.Session API call
     if not all_challans:
