@@ -28,7 +28,7 @@ import pathlib
 import requests
 from typing import Optional, Tuple
 
-from ..utils.config import BASE, API_BASE, USER_AGENT, act_type_for_date
+from ..utils.config import BASE, API_BASE, USER_AGENT, act_type_for_fy
 from .cdp import CDPCapture
 
 log = logging.getLogger("TDS")
@@ -383,7 +383,7 @@ def open_payment_history_ui(driver, cfg: dict = None, cdp_capture=None) -> bool:
                 break
             log.info("  Act Selection dialog (attempt %d/3) ...", attempt + 1)
             try:
-                act_code   = act_type_for_date(cfg.get("FROM_DATE") if cfg else None)
+                act_code   = act_type_for_fy(cfg.get("FINANCIAL_YEAR"), cfg.get("FROM_DATE") if cfg else None)
                 target_act = "Income-tax Act, 2025" if act_code == "N" else "Income-tax Act, 1961"
 
                 try:

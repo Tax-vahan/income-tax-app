@@ -246,10 +246,11 @@ def _queue_position(job_id: str) -> int:
 # ── Models ─────────────────────────────────────────────────────────────────────
 
 class FetchRequest(BaseModel):
-    tan:       str
-    password:  str
-    from_date: str
-    to_date:   str
+    tan:           str
+    password:      str
+    from_date:     str
+    to_date:       str
+    financialYear: Optional[str] = None
 
 
 class EntityRequest(BaseModel):
@@ -274,12 +275,13 @@ def _run_job(job_id: str, req: FetchRequest) -> None:
     output_file = os.path.join(job_dir, f"TDS_Challans_{req.tan}.xlsx")
 
     cfg = {
-        "TAN":          req.tan,
-        "PASSWORD":     req.password,
-        "FROM_DATE":    req.from_date,
-        "TO_DATE":      req.to_date,
-        "OUTPUT_PATH":  output_file,
-        "DOWNLOAD_DIR": job_dir,
+        "TAN":            req.tan,
+        "PASSWORD":       req.password,
+        "FROM_DATE":      req.from_date,
+        "TO_DATE":        req.to_date,
+        "FINANCIAL_YEAR": req.financialYear,
+        "OUTPUT_PATH":    output_file,
+        "DOWNLOAD_DIR":   job_dir,
     }
 
     try:

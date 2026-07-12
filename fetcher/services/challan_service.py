@@ -207,7 +207,7 @@ def run(
     # match, so this reflects the act actually confirmed in the dialog.
     if cdp_capture is not None and driver is not None:
         body = cdp_capture.get_response_body(
-            "/paymenthistory?pageNum=0&size=10000", driver, timeout=5
+            "/paymenthistory", driver, timeout=5
         )
         if body is not None:
             items, _ = _parse_challan_list(body)
@@ -223,6 +223,7 @@ def run(
                 data = fetch_payment_history(
                     session, tan,
                     cfg["FROM_DATE"], cfg["TO_DATE"],
+                    financial_year=cfg.get("FINANCIAL_YEAR"),
                     page_num=page_num,
                     page_size=cfg.get("PAGE_SIZE", 10000),
                 )

@@ -13,7 +13,7 @@ import logging
 
 import requests
 
-from ..utils.config import BASE, API_BASE, CONFIG, act_type_for_date
+from ..utils.config import BASE, API_BASE, CONFIG, act_type_for_fy
 from .retry import with_retry
 
 log = logging.getLogger("TDS")
@@ -37,12 +37,13 @@ def _post(
 
 @with_retry(max_retries=CONFIG["RETRY_COUNT"], base_delay=1.0)
 def fetch_payment_history(
-    session:   requests.Session,
-    tan:       str,
-    from_date: str,
-    to_date:   str,
-    page_num:  int = 0,
-    page_size: int = 10000,
+    session:        requests.Session,
+    tan:            str,
+    from_date:      str,
+    to_date:        str,
+    financial_year: str = None,
+    page_num:       int = 0,
+    page_size:      int = 10000,
 ) -> dict:
     """
     Paginated challan list.
@@ -56,11 +57,14 @@ def fetch_payment_history(
     payload = {
         "header": {"formName": "PO-03-PYMNT"},
         "formData": {
-            "pan":            tan,
-            "actType":        act_type_for_date(from_date),
-            "loggedInUserID": tan,
-            "fromDate":       from_date,
-            "toDate":         to_date,
+            "pan":              tan,
+            "actType":          act_type_for_fy(financial_year, from_date),
+            "loggedInUserID":   tan,
+            "loggedInUserType": "TDS",
+            "pageNumber":       page_num,
+            "pageSize":         page_size,
+            "fromDate":         from_date,
+            "toDate":           to_date,
         },
     }
     return _post(session, url, payload, timeout=CONFIG["TIMEOUT"])

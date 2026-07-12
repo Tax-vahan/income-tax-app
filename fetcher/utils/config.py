@@ -12,18 +12,21 @@ API_BASE = BASE + "/iec"
 NEW_ACT_CUTOVER = datetime(2026, 4, 1)
 
 
-def act_type_for_date(date_str: str) -> str:
+def act_type_for_fy(fy_str: str, date_str: str = None) -> str:
     """
-    Returns the portal's `actType` code for a given DD/MM/YYYY date string:
-    'N' (Income-tax Act, 2025) if on/after NEW_ACT_CUTOVER, else 'O'
-    (Income-tax Act, 1961). Defaults to 'O' if date_str is missing or
-    unparseable.
+    Returns the portal's `actType` code.
+    If financialYear is provided (e.g. "2026-27"), it checks if it's >= 2026.
+    'N' (Income-tax Act, 2025) if >= 2026-27, else 'O' (Income-tax Act, 1961).
+    Falls back to date_str logic if fy_str is missing.
+    """
+    if fy_str:
+        try:
+            start_year = int(fy_str.split("-")[0])
+            return "N" if start_year >= 2026 else "O"
+        except Exception:
+            pass
 
-    Single source of truth for this cutoff — used both to pick which
-    label to click in the Act Selection dialog (auth.py) and to set the
-    `actType` field sent to the paymenthistory API (api.py), so the two
-    can never disagree about which act is in effect.
-    """
+    # Fallback if financialYear isn't provided or is unparseable
     if not date_str:
         return "O"
     try:
@@ -55,7 +58,7 @@ CONFIG = {
     "OUTPUT_FILE":  "TDS_Challans.xlsx",
 
     # ── Fetch tuning ─────────────────────────────────────────────────
-    "PAGE_SIZE":    10000,   # challans per API page
+    "PAGE_SIZE":    100,     # challans per API page (was 10000)
     "TIMEOUT":      60,      # HTTP request timeout (seconds) — fail fast, then retry
     "WORKERS":      25,      # ThreadPoolExecutor max workers (I/O-bound, so higher is fine)
     "BATCH_SIZE":   20,      # detail-fetch batch size (was 5 — bigger = less overhead)
