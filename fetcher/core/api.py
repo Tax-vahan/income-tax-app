@@ -62,8 +62,6 @@ def fetch_payment_history(
             "loggedInUserType": "TDS",
             "pageNumber":       page_num,
             "pageSize":         page_size,
-            "fromDate":         from_date,
-            "toDate":           to_date,
         },
     }
     return _post(session, url, payload, timeout=CONFIG["TIMEOUT"])
