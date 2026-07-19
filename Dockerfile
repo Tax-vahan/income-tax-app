@@ -46,6 +46,10 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 COPY api_service.py .
 COPY fetcher/      ./fetcher/
 COPY pan_verification/ ./pan_verification/
+COPY tbr/ ./tbr/
+COPY tdstcs/ ./tdstcs/
+COPY justification/ ./justification/
+COPY conso/ ./conso/
 
 # Pre-create runtime directories so volume mounts work cleanly
 RUN mkdir -p downloads data

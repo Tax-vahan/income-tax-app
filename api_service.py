@@ -19,6 +19,14 @@ from fetcher.utils.config import CONFIG as _CFG
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from pan_verification.api.endpoints import router as pan_router
+from tbr.api.endpoints import router as tbr_router
+from tbr.services.tbr_service import TBRService, TBRServiceFactory
+from tdstcs.api.endpoints import router as tdstcs_router
+from tdstcs.services.tdstcs_service import TDSTCSService, TDSTCSServiceFactory
+from justification.api.endpoints import router as justification_router
+from justification.services.justification_service import JustificationService, JustificationServiceFactory
+from conso.api.endpoints import router as conso_router
+from conso.services.conso_service import ConsoService, ConsoServiceFactory
 from pan_verification.automation.browser_manager import BrowserManager
 from pan_verification.core import get_session_manager, close_session_manager
 from pan_verification.core.page_pool import cleanup_page_pool
@@ -30,6 +38,10 @@ DATA_DIR          = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
 DOWNLOADS_DIR     = os.environ.get("DOWNLOADS_DIR", os.path.join(BASE_DIR, "downloads"))
 FILED_FORMS_DIR   = os.environ.get("FILED_FORMS_DIR", os.path.join(BASE_DIR, "filed_forms"))
 JOBS_FILE         = os.path.join(DATA_DIR, "jobs.json")
+TBR_REQUESTS_FILE = os.path.join(DATA_DIR, "tbr_requests.json")
+TDSTCS_REQUESTS_FILE = os.path.join(DATA_DIR, "tdstcs_requests.json")
+JUSTIFICATION_REQUESTS_FILE = os.path.join(DATA_DIR, "justification_requests.json")
+CONSO_REQUESTS_FILE = os.path.join(DATA_DIR, "conso_requests.json")
 
 os.makedirs(DATA_DIR,        exist_ok=True)
 os.makedirs(DOWNLOADS_DIR,   exist_ok=True)
@@ -74,6 +86,66 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize PAN Verification components: {e}", exc_info=True)
         app.state.pan_enabled = False
 
+    # TBR Service Initialization
+    try:
+        logger.info("Initializing TBR Service...")
+        tbr_service = TBRService(
+            tbr_file=TBR_REQUESTS_FILE,
+            jobs_lock=tbr_lock,
+            data_dir=DATA_DIR,
+            downloads_dir=DOWNLOADS_DIR
+        )
+        TBRServiceFactory.set_instance(tbr_service)
+        app.state.tbr_service = tbr_service
+        logger.info("TBR Service initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize TBR Service: {e}", exc_info=True)
+
+    # TDS/TCS Service Initialization
+    try:
+        logger.info("Initializing TDS/TCS Service...")
+        tdstcs_service = TDSTCSService(
+            tdstcs_file=TDSTCS_REQUESTS_FILE,
+            jobs_lock=tdstcs_lock,
+            data_dir=DATA_DIR,
+            downloads_dir=DOWNLOADS_DIR
+        )
+        TDSTCSServiceFactory.set_instance(tdstcs_service)
+        app.state.tdstcs_service = tdstcs_service
+        logger.info("TDS/TCS Service initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize TDS/TCS Service: {e}", exc_info=True)
+
+    # Justification Service Initialization
+    try:
+        logger.info("Initializing Justification Service...")
+        justification_service = JustificationService(
+            justification_file=JUSTIFICATION_REQUESTS_FILE,
+            jobs_lock=justification_lock,
+            data_dir=DATA_DIR,
+            downloads_dir=DOWNLOADS_DIR
+        )
+        JustificationServiceFactory.set_instance(justification_service)
+        app.state.justification_service = justification_service
+        logger.info("Justification Service initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Justification Service: {e}")
+
+    # CONSO Service Initialization
+    try:
+        logger.info("Initializing CONSO Service...")
+        conso_service = ConsoService(
+            conso_file=CONSO_REQUESTS_FILE,
+            jobs_lock=conso_lock,
+            data_dir=DATA_DIR,
+            downloads_dir=DOWNLOADS_DIR
+        )
+        ConsoServiceFactory.set_instance(conso_service)
+        app.state.conso_service = conso_service
+        logger.info("CONSO Service initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize CONSO Service: {e}")
+
     yield
     
     # Shutdown
@@ -89,16 +161,51 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Error during PAN Verification cleanup: {e}", exc_info=True)
 
+    # TBR Service Cleanup
+    if hasattr(app.state, "tbr_service"):
+        try:
+            logger.info("Saving TBR requests...")
+            app.state.tbr_service._save_requests()
+            logger.info("TBR requests saved.")
+        except Exception as e:
+            logger.error(f"Error saving TBR requests: {e}")
+
+    # TDS/TCS Service Cleanup
+    if hasattr(app.state, "tdstcs_service"):
+        try:
+            logger.info("Saving TDS/TCS requests...")
+            app.state.tdstcs_service._save_requests()
+            logger.info("TDS/TCS requests saved.")
+        except Exception as e:
+            logger.error(f"Error saving TDS/TCS requests: {e}")
+
+    # Justification Service Cleanup
+    if hasattr(app.state, "justification_service"):
+        try:
+            logger.info("Saving justification requests...")
+            app.state.justification_service._save_requests()
+            logger.info("Justification requests saved.")
+        except Exception as e:
+            logger.error(f"Error saving justification requests: {e}")
+
     logger.info("Shutting down TDS background workers...")
     _stop_event.set()
-    
+
     # Push sentinel values to unblock workers waiting on queue.get()
     for _ in range(_WORKER_COUNT):
         _job_queue.put(None)
-        
+
     for t in workers:
         t.join(timeout=5.0)
-        
+
+    # CONSO Service Cleanup
+    if hasattr(app.state, "conso_service"):
+        try:
+            logger.info("Saving CONSO requests...")
+            app.state.conso_service._save_requests()
+        except Exception as e:
+            logger.error(f"Error saving CONSO: {e}")
+
     _flush_jobs()
     logger.info("Shutdown complete.")
 
@@ -111,6 +218,10 @@ async def check_pan_enabled(request: Request):
     if getattr(request.app.state, "pan_enabled", False) is False:
         raise HTTPException(status_code=503, detail="PAN Verification service is currently unavailable.")
 
+app.include_router(tbr_router, prefix="/api/v1", tags=["TBR"])
+app.include_router(tdstcs_router, prefix="/api/v1", tags=["TDS/TCS Certificates"])
+app.include_router(justification_router, prefix="/api/v1", tags=["Justification Report"])
+app.include_router(conso_router, prefix="/api/v1", tags=["CONSO File"])
 app.include_router(pan_router, prefix="/pan-verification", tags=["PAN Verification"], dependencies=[Depends(check_pan_enabled)])
 
 @app.exception_handler(AutomationError)
@@ -136,6 +247,13 @@ _MAX_QUEUED   = 10   # reject new jobs with 503 when this many are already waiti
 
 jobs:      dict  = {}
 jobs_lock        = threading.Lock()
+
+# Dedicated locks per module — avoids false contention between unrelated
+# subsystems that previously all serialized on the single TDS jobs_lock.
+tbr_lock            = threading.Lock()
+tdstcs_lock         = threading.Lock()
+justification_lock  = threading.Lock()
+conso_lock          = threading.Lock()
 
 # Debounced job persistence — coalesce rapid writes into one flush every 2 s
 _save_pending = False

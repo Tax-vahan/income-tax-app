@@ -34,6 +34,7 @@ services:
       - ./data:/app/data
       - ./downloads:/app/downloads
       - ./filed_forms:/app/filed_forms
+      - ./captchas:/app/captchas
 
     # ── Restart policy ────────────────────────────────────────────────
     restart: unless-stopped
