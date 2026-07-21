@@ -218,10 +218,10 @@ async def check_pan_enabled(request: Request):
     if getattr(request.app.state, "pan_enabled", False) is False:
         raise HTTPException(status_code=503, detail="PAN Verification service is currently unavailable.")
 
-app.include_router(tbr_router, prefix="/api/v1", tags=["TBR"])
-app.include_router(tdstcs_router, prefix="/api/v1", tags=["TDS/TCS Certificates"])
-app.include_router(justification_router, prefix="/api/v1", tags=["Justification Report"])
-app.include_router(conso_router, prefix="/api/v1", tags=["CONSO File"])
+app.include_router(tbr_router, prefix="/tds/api/v1", tags=["TBR"])
+app.include_router(tdstcs_router, prefix="/tds/api/v1", tags=["TDS/TCS Certificates"])
+app.include_router(justification_router, prefix="/tds/api/v1", tags=["Justification Report"])
+app.include_router(conso_router, prefix="/tds/api/v1", tags=["CONSO File"])
 app.include_router(pan_router, prefix="/pan-verification", tags=["PAN Verification"], dependencies=[Depends(check_pan_enabled)])
 
 @app.exception_handler(AutomationError)
