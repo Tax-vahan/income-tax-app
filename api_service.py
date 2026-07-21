@@ -209,7 +209,7 @@ async def lifespan(app: FastAPI):
     _flush_jobs()
     logger.info("Shutdown complete.")
 
-app = FastAPI(title="TDS Challan API", version="6.0", lifespan=lifespan)
+app = FastAPI(title="TDS Challan API", version="6.0", lifespan=lifespan, docs_url="/tds/docs", openapi_url="/tds/openapi.json", redoc_url="/tds/redoc")
 
 
 from fastapi import Depends
