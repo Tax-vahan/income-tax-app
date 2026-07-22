@@ -58,3 +58,66 @@ def compute_date_range(manual_challans: list[dict]) -> tuple[str, str]:
             )
         dates.append(dt)
     return min(dates).strftime("%d/%m/%Y"), max(dates).strftime("%d/%m/%Y")
+
+
+def verify_challans(
+    manual: list[dict],
+    government: list[dict],
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+) -> dict:
+    """
+    Compare manual challans against government-fetched challans using an
+    O(n) composite-key lookup, and return the verification result payload.
+
+    Government field mapping (from the existing, unmodified enrich() output):
+    bsrCode, challanNum (voucher/serial), tenderDt (falls back conceptually
+    to paymentDt upstream), totalAmt.
+    """
+    gov_index: dict = {}
+    for g in government:
+        key = build_key(
+            g.get("bsrCode"), g.get("challanNum"),
+            g.get("tenderDt") or g.get("paymentDt"), g.get("totalAmt"),
+        )
+        gov_index[key] = g.get("crn")
+
+    details = []
+    verified = 0
+    for item in manual:
+        key = build_key(
+            item.get("bsrCode"), item.get("voucherNo"),
+            item.get("dateOfDeposit"), item.get("totalAmount"),
+        )
+        matched_crn = gov_index.get(key)
+        status = "Verified" if matched_crn is not None else "Not Verified"
+        if status == "Verified":
+            verified += 1
+        details.append({
+            "id":         item.get("id"),
+            "voucherNo":  item.get("voucherNo"),
+            "status":     status,
+            "matchedCrn": matched_crn,
+        })
+
+    total = len(manual)
+    not_verified = total - verified
+
+    if not government:
+        message = "No challans found on the government portal for the selected date range."
+    elif verified == 0:
+        message = "Verification completed. 0 challans verified."
+    else:
+        message = "Verification completed."
+
+    return {
+        "success":           True,
+        "message":           message,
+        "totalManual":       total,
+        "verified":          verified,
+        "notVerified":       not_verified,
+        "fromDate":          from_date,
+        "toDate":            to_date,
+        "governmentFetched": len(government),
+        "details":           details,
+    }

@@ -66,3 +66,97 @@ def test_compute_date_range_raises_on_unparseable_date():
     manual = [{"id": "a", "dateOfDeposit": "not-a-date"}]
     with pytest.raises(ValueError, match="Unparseable dateOfDeposit"):
         compute_date_range(manual)
+
+
+from fetcher.services.challan_verification import verify_challans
+
+
+def _gov(bsr, voucher, date, amount, crn):
+    return {"bsrCode": bsr, "challanNum": voucher, "tenderDt": date, "totalAmt": amount, "crn": crn}
+
+
+def _manual(id_, bsr, voucher, date, amount):
+    return {"id": id_, "bsrCode": bsr, "voucherNo": voucher, "dateOfDeposit": date, "totalAmount": amount}
+
+
+def test_single_verified_challan():
+    manual = [_manual("m1", "0180002", "37358", "07/05/2026", 52830)]
+    government = [_gov("0180002", "37358", "07/05/2026", 52830, "CRN1")]
+    result = verify_challans(manual, government)
+    assert result["totalManual"] == 1
+    assert result["verified"] == 1
+    assert result["notVerified"] == 0
+    assert result["details"][0]["status"] == "Verified"
+    assert result["details"][0]["matchedCrn"] == "CRN1"
+    assert result["message"] == "Verification completed."
+
+
+def test_multiple_verified_challans():
+    manual = [
+        _manual("m1", "0180002", "37358", "07/05/2026", 52830),
+        _manual("m2", "0180002", "17758", "05/06/2026", 45000),
+    ]
+    government = [
+        _gov("0180002", "37358", "07/05/2026", 52830, "CRN1"),
+        _gov("0180002", "17758", "05/06/2026", 45000, "CRN2"),
+    ]
+    result = verify_challans(manual, government)
+    assert result["verified"] == 2
+    assert result["notVerified"] == 0
+
+
+def test_no_matches():
+    manual = [_manual("m1", "0180002", "37358", "07/05/2026", 52830)]
+    government = [_gov("0180002", "99999", "07/05/2026", 52830, "CRNX")]
+    result = verify_challans(manual, government)
+    assert result["verified"] == 0
+    assert result["notVerified"] == 1
+    assert result["details"][0]["status"] == "Not Verified"
+    assert result["details"][0]["matchedCrn"] is None
+    assert result["message"] == "Verification completed. 0 challans verified."
+
+
+def test_duplicate_voucher_numbers_different_bsr_codes():
+    manual = [
+        _manual("m1", "0180002", "12345", "07/05/2026", 1000),
+        _manual("m2", "0987654", "12345", "07/05/2026", 2000),
+    ]
+    government = [
+        _gov("0180002", "12345", "07/05/2026", 1000, "CRN1"),
+        _gov("0987654", "12345", "07/05/2026", 2000, "CRN2"),
+    ]
+    result = verify_challans(manual, government)
+    assert result["verified"] == 2
+    by_id = {d["id"]: d for d in result["details"]}
+    assert by_id["m1"]["matchedCrn"] == "CRN1"
+    assert by_id["m2"]["matchedCrn"] == "CRN2"
+
+
+def test_amount_normalization_in_matching():
+    manual = [_manual("m1", "0180002", "37358", "07/05/2026", 55140.0)]
+    government = [_gov("0180002", "37358", "07/05/2026", "55140.00", "CRN1")]
+    result = verify_challans(manual, government)
+    assert result["details"][0]["status"] == "Verified"
+
+
+def test_empty_government_list_marks_all_not_verified():
+    manual = [_manual("m1", "0180002", "37358", "07/05/2026", 52830)]
+    result = verify_challans(manual, [])
+    assert result["verified"] == 0
+    assert result["notVerified"] == 1
+    assert result["governmentFetched"] == 0
+    assert result["message"] == "No challans found on the government portal for the selected date range."
+
+
+def test_no_manual_challans_returns_zero_totals():
+    result = verify_challans([], [_gov("0180002", "37358", "07/05/2026", 52830, "CRN1")])
+    assert result["totalManual"] == 0
+    assert result["verified"] == 0
+    assert result["notVerified"] == 0
+    assert result["details"] == []
+
+
+def test_from_date_to_date_passthrough():
+    result = verify_challans([], [], from_date="07/05/2026", to_date="01/07/2026")
+    assert result["fromDate"] == "07/05/2026"
+    assert result["toDate"] == "01/07/2026"
