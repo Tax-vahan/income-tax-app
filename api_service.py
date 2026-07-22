@@ -15,6 +15,7 @@ from fetcher.main import run_fetch
 from fetcher.core.api  import fetch_entity_profile
 from fetcher.core      import auth as _auth
 from fetcher.utils.config import CONFIG as _CFG
+from fetcher.services import challan_verification
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -322,6 +323,8 @@ def _worker() -> None:
                 _run_entity_job(job_id, req)
             elif kind == "view_filed_forms":
                 _run_view_filed_forms_job(job_id, req)
+            elif kind == "verify":
+                _run_verify_job(job_id, req)
             else:
                 logger.error("Unknown job kind: %s", kind)
         except Exception:
@@ -332,13 +335,16 @@ def _worker() -> None:
 
 # ── Queue introspection helpers ────────────────────────────────────────────────
 
-def _active_tan_job(tan: str, kind: str = "fetch"):
-    """Return the most recent active (pending/running) job for this TAN, or None."""
+def _active_tan_job(tan: str, kinds="fetch"):
+    """Return the most recent active (pending/running) job for this TAN
+    whose type is in `kinds` (a single kind string, or an iterable of them),
+    or None."""
+    kind_set = (kinds,) if isinstance(kinds, str) else tuple(kinds)
     with jobs_lock:
         active = [
             j for j in jobs.values()
             if j.get("tan") == tan
-            and j.get("type", "fetch") == kind
+            and j.get("type", "fetch") in kind_set
             and j.get("status") in ("pending", "running")
         ]
     return active[-1] if active else None
@@ -370,6 +376,21 @@ class FetchRequest(BaseModel):
     from_date:     str
     to_date:       str
     financialYear: Optional[str] = None
+
+
+class ManualChallanItem(BaseModel):
+    id:            str
+    voucherNo:     str
+    bsrCode:       str
+    dateOfDeposit: str
+    totalAmount:   float
+
+
+class VerifyChallansRequest(BaseModel):
+    tan:            str
+    password:       str
+    financialYear:  Optional[str] = None
+    manual_challans: list[ManualChallanItem] = []
 
 
 class EntityRequest(BaseModel):
@@ -527,12 +548,72 @@ def _run_view_filed_forms_job(job_id: str, req: ViewFiledFormsRequest) -> None:
                    completed_at=datetime.now().isoformat())
 
 
+def _run_verify_job(job_id: str, req: VerifyChallansRequest) -> None:
+    import time
+    t0 = time.time()
+    logger.info(
+        "Verify job %s started for TAN %s — %d manual challans",
+        job_id, req.tan, len(req.manual_challans),
+    )
+    _patch_job(job_id, status="running", started_at=datetime.now().isoformat())
+
+    manual = [item.model_dump() for item in req.manual_challans]
+
+    try:
+        from_date, to_date = challan_verification.compute_date_range(manual)
+        logger.info("Verify job %s: computed date range %s → %s", job_id, from_date, to_date)
+
+        job_dir     = os.path.join(DOWNLOADS_DIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        output_file = os.path.join(job_dir, f"TDS_Challans_{req.tan}.xlsx")
+
+        cfg = {
+            "TAN":            req.tan,
+            "PASSWORD":       req.password,
+            "FROM_DATE":      from_date,
+            "TO_DATE":        to_date,
+            "FINANCIAL_YEAR": req.financialYear,
+            "OUTPUT_PATH":    output_file,
+            "DOWNLOAD_DIR":   job_dir,
+        }
+
+        path, _count, _grand = run_fetch(cfg)
+        json_path = path.rsplit(".", 1)[0] + ".json"
+        government: list = []
+        if os.path.exists(json_path):
+            with open(json_path, encoding="utf-8") as f:
+                government = json.load(f)
+
+        result = challan_verification.verify_challans(manual, government, from_date, to_date)
+
+        _patch_job(
+            job_id,
+            status="completed",
+            completed_at=datetime.now().isoformat(),
+            result=result,
+        )
+        logger.info(
+            "Verify job %s done: %d manual, %d verified, %d not verified "
+            "(%d government challans fetched) in %.1fs",
+            job_id, result["totalManual"], result["verified"], result["notVerified"],
+            result["governmentFetched"], time.time() - t0,
+        )
+    except Exception:
+        logger.exception("Verify job %s failed after %.1fs", job_id, time.time() - t0)
+        _patch_job(
+            job_id,
+            status="failed",
+            completed_at=datetime.now().isoformat(),
+            error="Unable to fetch challans from Income Tax portal.",
+        )
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @app.post("/tds/api/v1/fetch")
 async def create_fetch_job(req: FetchRequest):
     # Deduplicate: if this TAN is already active, return the existing job
-    existing = _active_tan_job(req.tan, "fetch")
+    existing = _active_tan_job(req.tan, ("fetch", "verify"))
     if existing:
         return {
             "job_id":  existing["id"],
@@ -561,6 +642,57 @@ async def create_fetch_job(req: FetchRequest):
         }
     _save_jobs()
     _job_queue.put((job_id, "fetch", req))
+    pos = _queue_position(job_id)
+    return {"job_id": job_id, "status": "pending", "queue_position": pos}
+
+
+@app.post("/tds/api/v1/challan/verify")
+async def create_verify_job(req: VerifyChallansRequest):
+    if not req.manual_challans:
+        return {
+            "success":     True,
+            "message":     "No manual challans found.",
+            "totalManual": 0,
+            "verified":    0,
+            "notVerified": 0,
+            "details":     [],
+        }
+
+    manual = [item.model_dump() for item in req.manual_challans]
+    try:
+        challan_verification.compute_date_range(manual)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    existing = _active_tan_job(req.tan, ("fetch", "verify"))
+    if existing:
+        return {
+            "job_id":  existing["id"],
+            "status":  existing["status"],
+            "message": (
+                f"A {existing.get('type', 'fetch')} job for TAN {req.tan} is already "
+                f"{existing['status']}. Poll this job_id for updates."
+            ),
+        }
+
+    pending = _pending_count()
+    if pending >= _MAX_QUEUED:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Server busy — {pending} jobs queued. Try again in a few minutes.",
+        )
+
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {
+            "id":         job_id,
+            "tan":        req.tan,
+            "type":       "verify",
+            "status":     "pending",
+            "created_at": datetime.now().isoformat(),
+        }
+    _save_jobs()
+    _job_queue.put((job_id, "verify", req))
     pos = _queue_position(job_id)
     return {"job_id": job_id, "status": "pending", "queue_position": pos}
 
