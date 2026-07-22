@@ -41,3 +41,28 @@ def test_normalize_amount_returns_empty_string_when_unparseable():
 def test_build_key_combines_normalized_fields():
     key = build_key("0180002", "12345", "07/05/2026", 55140)
     assert key == "0180002|12345|2026-05-07|55140.00"
+
+
+import pytest
+
+from fetcher.services.challan_verification import compute_date_range
+
+
+def test_compute_date_range_returns_min_and_max():
+    manual = [
+        {"id": "a", "dateOfDeposit": "07/05/2026"},
+        {"id": "b", "dateOfDeposit": "05/06/2026"},
+        {"id": "c", "dateOfDeposit": "01/07/2026"},
+    ]
+    assert compute_date_range(manual) == ("07/05/2026", "01/07/2026")
+
+
+def test_compute_date_range_single_challan():
+    manual = [{"id": "a", "dateOfDeposit": "11/04/2026"}]
+    assert compute_date_range(manual) == ("11/04/2026", "11/04/2026")
+
+
+def test_compute_date_range_raises_on_unparseable_date():
+    manual = [{"id": "a", "dateOfDeposit": "not-a-date"}]
+    with pytest.raises(ValueError, match="Unparseable dateOfDeposit"):
+        compute_date_range(manual)

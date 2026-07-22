@@ -41,3 +41,20 @@ def build_key(bsr, voucher, date, amount) -> str:
         normalize_date(date),
         normalize_amount(amount),
     ))
+
+
+def compute_date_range(manual_challans: list[dict]) -> tuple[str, str]:
+    """
+    Return (from_date, to_date) as DD/MM/YYYY strings spanning every manual
+    challan's dateOfDeposit. Raises ValueError if any date is unparseable.
+    """
+    dates = []
+    for item in manual_challans:
+        raw = item.get("dateOfDeposit")
+        dt = _parse_date_str(str(raw or ""))
+        if dt is None:
+            raise ValueError(
+                f"Unparseable dateOfDeposit for challan id={item.get('id')!r}: {raw!r}"
+            )
+        dates.append(dt)
+    return min(dates).strftime("%d/%m/%Y"), max(dates).strftime("%d/%m/%Y")
