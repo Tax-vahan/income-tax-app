@@ -10,9 +10,10 @@ API_BASE = BASE + "/iec"
 
 # Main TaxVahan backend — its own API, used only to fetch manually entered
 # challans for the /tds/api/v1/challan/verify endpoint. Not the ITD/TRACES
-# portal (see BASE/API_BASE above for that).
+# portal (see BASE/API_BASE above for that). Auth is token-forwarding — the
+# caller supplies its own Authorization header value per request, so there's
+# no static API key to configure here.
 TAXVAHAN_API_BASE = os.environ.get("TAXVAHAN_API_BASE", "https://api.taxvahan.com")
-TAXVAHAN_API_KEY  = os.environ.get("TAXVAHAN_API_KEY", "")
 
 # Cutover date: the portal switches from the old to the new Income Tax Act.
 NEW_ACT_CUTOVER = datetime(2026, 4, 1)
