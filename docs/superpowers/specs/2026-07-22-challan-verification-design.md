@@ -208,3 +208,31 @@ no Selenium, no network:
 This repo persists no "verified" state — the other backend owns that. Re-running verify with the
 same input is naturally idempotent here: identical inputs always produce identical output, and the
 only side effect is a new job record, the same as repeat `/fetch` calls already produce today.
+
+## Addendum (2026-07-23): three-way status
+
+A follow-up spec doc ("Challan Verification API - Implementation Prompt") refined Step 4's
+matching rule: a manual challan whose BSR + Voucher + Date match a government challan but whose
+Amount doesn't should be reported distinctly from one whose BSR + Voucher + Date combination has
+no match at all. `verify_challans()` now returns one of three per-item statuses instead of two:
+
+- `"Verified"` — BSR + Voucher + Date + Amount all match.
+- `"Amount Not Verified"` — BSR + Voucher + Date match, Amount doesn't.
+- `"Not Found"` — the BSR + Voucher + Date combination has no match.
+
+Implementation: alongside the existing full-key (`bsr|voucher|date|amount`) index, build a second
+partial-key (`bsr|voucher|date`) index from the government data. A manual challan checks the full
+index first; on a miss, it checks the partial index to distinguish the two failure modes. Both
+indexes are built once, so lookups stay O(n) overall — no change to the algorithmic approach, just
+a second cheap index.
+
+This is an additive change to the response contract: `totalManual`, `verified`, `fromDate`,
+`toDate`, `governmentFetched`, and `details[].matchedCrn` are unchanged. New fields —
+`amountNotVerified` and `notFound` counts, plus each `details[]` item's `status` now being one of
+the three values above instead of `"Verified"`/`"Not Verified"` — are added. `notVerified` is kept
+for backward compatibility, defined as `amountNotVerified + notFound`.
+
+The same follow-up doc restated Steps 1 and 5 (querying the DB for eligible manual challans —
+excluding non-null `SectionCode` and `BookEntry = Yes` — and persisting verification status back to
+the DB). Per the same decision recorded above, those remain the other backend's responsibility;
+this repo's scope is unchanged (stateless matching only, no DB access).
