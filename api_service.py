@@ -16,6 +16,7 @@ from fetcher.core.api  import fetch_entity_profile
 from fetcher.core      import auth as _auth
 from fetcher.utils.config import CONFIG as _CFG
 from fetcher.services import challan_verification
+from fetcher.core import taxvahan_api
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -378,19 +379,13 @@ class FetchRequest(BaseModel):
     financialYear: Optional[str] = None
 
 
-class ManualChallanItem(BaseModel):
-    id:            str
-    voucherNo:     str
-    bsrCode:       str
-    dateOfDeposit: str
-    totalAmount:   float
-
-
 class VerifyChallansRequest(BaseModel):
     tan:            str
     password:       str
-    financialYear:  Optional[str] = None
-    manual_challans: list[ManualChallanItem] = []
+    deductorId:     str
+    financialYear:  str
+    quarter:        str
+    categoryId:     int
 
 
 class EntityRequest(BaseModel):
@@ -552,12 +547,54 @@ def _run_verify_job(job_id: str, req: VerifyChallansRequest) -> None:
     import time
     t0 = time.time()
     logger.info(
-        "Verify job %s started for TAN %s — %d manual challans",
-        job_id, req.tan, len(req.manual_challans),
+        "Verify job %s started for TAN %s, deductor %s, %s %s",
+        job_id, req.tan, req.deductorId, req.financialYear, req.quarter,
     )
     _patch_job(job_id, status="running", started_at=datetime.now().isoformat())
 
-    manual = [item.model_dump() for item in req.manual_challans]
+    try:
+        raw_challans = taxvahan_api.fetch_manual_challans(
+            deductor_id=req.deductorId,
+            financial_year=req.financialYear,
+            quarter=req.quarter,
+            category_id=req.categoryId,
+        )
+    except Exception:
+        logger.exception(
+            "Verify job %s failed fetching manual challans after %.1fs", job_id, time.time() - t0,
+        )
+        _patch_job(
+            job_id,
+            status="failed",
+            completed_at=datetime.now().isoformat(),
+            error="Unable to fetch manual challans from TaxVahan.",
+        )
+        return
+
+    manual = challan_verification.filter_eligible_manual_challans(raw_challans)
+    logger.info(
+        "Verify job %s: %d/%d manual challans eligible for verification",
+        job_id, len(manual), len(raw_challans),
+    )
+
+    if not manual:
+        _patch_job(
+            job_id,
+            status="completed",
+            completed_at=datetime.now().isoformat(),
+            result={
+                "success":           True,
+                "message":           "No manual challans found.",
+                "totalManual":       0,
+                "verified":          0,
+                "amountNotVerified": 0,
+                "notFound":          0,
+                "notVerified":       0,
+                "details":           [],
+            },
+        )
+        logger.info("Verify job %s done: no eligible manual challans", job_id)
+        return
 
     try:
         from_date, to_date = challan_verification.compute_date_range(manual)
@@ -593,10 +630,10 @@ def _run_verify_job(job_id: str, req: VerifyChallansRequest) -> None:
             result=result,
         )
         logger.info(
-            "Verify job %s done: %d manual, %d verified, %d not verified "
+            "Verify job %s done: %d manual, %d verified, %d amount-not-verified, %d not-found "
             "(%d government challans fetched) in %.1fs",
-            job_id, result["totalManual"], result["verified"], result["notVerified"],
-            result["governmentFetched"], time.time() - t0,
+            job_id, result["totalManual"], result["verified"], result["amountNotVerified"],
+            result["notFound"], result["governmentFetched"], time.time() - t0,
         )
     except Exception:
         logger.exception("Verify job %s failed after %.1fs", job_id, time.time() - t0)
@@ -648,22 +685,9 @@ async def create_fetch_job(req: FetchRequest):
 
 @app.post("/tds/api/v1/challan/verify")
 async def create_verify_job(req: VerifyChallansRequest):
-    if not req.manual_challans:
-        return {
-            "success":     True,
-            "message":     "No manual challans found.",
-            "totalManual": 0,
-            "verified":    0,
-            "notVerified": 0,
-            "details":     [],
-        }
-
-    manual = [item.model_dump() for item in req.manual_challans]
-    try:
-        challan_verification.compute_date_range(manual)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
+    # Whether any manual challans exist, and whether they're eligible, is only
+    # known after calling the main TaxVahan API — that's I/O, so it happens in
+    # the job runner (_run_verify_job), not synchronously here.
     existing = _active_tan_job(req.tan, ("fetch", "verify"))
     if existing:
         return {

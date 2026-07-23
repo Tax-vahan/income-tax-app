@@ -8,45 +8,31 @@ from api_service import app, jobs, jobs_lock, VerifyChallansRequest
 client = TestClient(app)
 
 
-def _manual_item(id_="m1"):
+def _verify_body(**overrides):
+    body = {
+        "tan":           "TESTTAN1234A",
+        "password":      "x",
+        "deductorId":    "404868",
+        "financialYear": "2026-27",
+        "quarter":       "Q1",
+        "categoryId":    2,
+    }
+    body.update(overrides)
+    return body
+
+
+def _main_api_challan(id_=3705, voucher="37358", bsr="0180002", date="07/05/2026",
+                       amount=52830.00, section_code="", book_entry="N"):
     return {
-        "id":            id_,
-        "voucherNo":     "37358",
-        "bsrCode":       "0180002",
-        "dateOfDeposit": "07/05/2026",
-        "totalAmount":   52830.00,
+        "id": id_, "challanVoucherNo": voucher, "bsrCode": bsr,
+        "dateOfDeposit": date, "totalTaxDeposit": amount,
+        "sectionCode": section_code, "tdsDepositByBook": book_entry,
     }
 
 
 def _clear_jobs():
     with jobs_lock:
         jobs.clear()
-
-
-def test_empty_manual_challans_returns_synchronous_200():
-    _clear_jobs()
-    resp = client.post("/tds/api/v1/challan/verify", json={
-        "tan": "TESTTAN1234A", "password": "x", "manual_challans": [],
-    })
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "success": True, "message": "No manual challans found.",
-        "totalManual": 0, "verified": 0, "notVerified": 0, "details": [],
-    }
-    with jobs_lock:
-        assert jobs == {}
-
-
-def test_unparseable_date_returns_422():
-    _clear_jobs()
-    resp = client.post("/tds/api/v1/challan/verify", json={
-        "tan": "TESTTAN1234A", "password": "x",
-        "manual_challans": [{**_manual_item(), "dateOfDeposit": "not-a-date"}],
-    })
-    assert resp.status_code == 422
-    assert "Unparseable dateOfDeposit" in resp.json()["detail"]
-    with jobs_lock:
-        assert jobs == {}
 
 
 def test_dedups_against_active_fetch_job_for_same_tan():
@@ -56,16 +42,74 @@ def test_dedups_against_active_fetch_job_for_same_tan():
             "id": "existing-job", "tan": "TESTTAN1234A", "type": "fetch",
             "status": "running", "created_at": "2026-07-22T00:00:00",
         }
-    resp = client.post("/tds/api/v1/challan/verify", json={
-        "tan": "TESTTAN1234A", "password": "x", "manual_challans": [_manual_item()],
-    })
+    resp = client.post("/tds/api/v1/challan/verify", json=_verify_body())
     assert resp.status_code == 200
     body = resp.json()
     assert body["job_id"] == "existing-job"
     assert body["status"] == "running"
 
 
-def test_run_verify_job_marks_failed_on_fetch_error(tmp_path, monkeypatch):
+def test_creates_pending_job_for_new_tan():
+    _clear_jobs()
+    resp = client.post("/tds/api/v1/challan/verify", json=_verify_body())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "pending"
+    assert "job_id" in body
+    with jobs_lock:
+        job = jobs[body["job_id"]]
+    assert job["type"] == "verify"
+    assert job["tan"] == "TESTTAN1234A"
+
+
+def test_run_verify_job_fails_when_main_api_fetch_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_service, "DOWNLOADS_DIR", str(tmp_path))
+    job_id = "job-main-api-fail"
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id, "tan": "TESTTAN1234A", "type": "verify",
+            "status": "pending", "created_at": "2026-07-22T00:00:00",
+        }
+    req = VerifyChallansRequest(**_verify_body())
+
+    with patch("api_service.taxvahan_api.fetch_manual_challans",
+               side_effect=RuntimeError("unauthorized")) as mock_fetch_manual, \
+         patch("api_service.run_fetch") as mock_run_fetch:
+        api_service._run_verify_job(job_id, req)
+
+    mock_run_fetch.assert_not_called()
+    with jobs_lock:
+        job = jobs[job_id]
+    assert job["status"] == "failed"
+    assert job["error"] == "Unable to fetch manual challans from TaxVahan."
+
+
+def test_run_verify_job_completes_when_no_eligible_manual_challans(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_service, "DOWNLOADS_DIR", str(tmp_path))
+    job_id = "job-no-eligible"
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id, "tan": "TESTTAN1234A", "type": "verify",
+            "status": "pending", "created_at": "2026-07-22T00:00:00",
+        }
+    req = VerifyChallansRequest(**_verify_body())
+
+    # SectionCode is set, so nothing here is eligible for verification.
+    raw = [_main_api_challan(section_code="194Q")]
+
+    with patch("api_service.taxvahan_api.fetch_manual_challans", return_value=raw), \
+         patch("api_service.run_fetch") as mock_run_fetch:
+        api_service._run_verify_job(job_id, req)
+
+    mock_run_fetch.assert_not_called()
+    with jobs_lock:
+        job = jobs[job_id]
+    assert job["status"] == "completed"
+    assert job["result"]["message"] == "No manual challans found."
+    assert job["result"]["totalManual"] == 0
+
+
+def test_run_verify_job_marks_failed_on_traces_fetch_error(tmp_path, monkeypatch):
     monkeypatch.setattr(api_service, "DOWNLOADS_DIR", str(tmp_path))
     job_id = "job-fail"
     with jobs_lock:
@@ -73,11 +117,10 @@ def test_run_verify_job_marks_failed_on_fetch_error(tmp_path, monkeypatch):
             "id": job_id, "tan": "TESTTAN1234A", "type": "verify",
             "status": "pending", "created_at": "2026-07-22T00:00:00",
         }
-    req = VerifyChallansRequest(
-        tan="TESTTAN1234A", password="x", manual_challans=[_manual_item()],
-    )
+    req = VerifyChallansRequest(**_verify_body())
 
-    with patch("api_service.run_fetch", side_effect=RuntimeError("TRACES login failed")):
+    with patch("api_service.taxvahan_api.fetch_manual_challans", return_value=[_main_api_challan()]), \
+         patch("api_service.run_fetch", side_effect=RuntimeError("TRACES login failed")):
         api_service._run_verify_job(job_id, req)
 
     with jobs_lock:
@@ -94,15 +137,14 @@ def test_run_verify_job_completes_with_empty_portal_response(tmp_path, monkeypat
             "id": job_id, "tan": "TESTTAN1234A", "type": "verify",
             "status": "pending", "created_at": "2026-07-22T00:00:00",
         }
-    req = VerifyChallansRequest(
-        tan="TESTTAN1234A", password="x", manual_challans=[_manual_item()],
-    )
+    req = VerifyChallansRequest(**_verify_body())
 
     xlsx_path = tmp_path / "fake.xlsx"
     json_path = tmp_path / "fake.json"
     json_path.write_text("[]")
 
-    with patch("api_service.run_fetch", return_value=(str(xlsx_path), 0, 0)):
+    with patch("api_service.taxvahan_api.fetch_manual_challans", return_value=[_main_api_challan()]), \
+         patch("api_service.run_fetch", return_value=(str(xlsx_path), 0, 0)):
         api_service._run_verify_job(job_id, req)
 
     with jobs_lock:
@@ -124,19 +166,18 @@ def test_run_verify_job_marks_amount_not_verified(tmp_path, monkeypatch):
             "id": job_id, "tan": "TESTTAN1234A", "type": "verify",
             "status": "pending", "created_at": "2026-07-22T00:00:00",
         }
-    req = VerifyChallansRequest(
-        tan="TESTTAN1234A", password="x", manual_challans=[_manual_item()],
-    )
+    req = VerifyChallansRequest(**_verify_body())
 
     xlsx_path = tmp_path / "fake.xlsx"
     json_path = tmp_path / "fake.json"
-    # Same BSR/voucher/date as _manual_item(), but a different amount.
+    # Same BSR/voucher/date as _main_api_challan()'s eligible mapping, different amount.
     json_path.write_text(
         '[{"bsrCode": "0180002", "challanNum": "37358", "tenderDt": "07/05/2026", '
         '"totalAmt": 99999, "crn": "26050700123452KKBK"}]'
     )
 
-    with patch("api_service.run_fetch", return_value=(str(xlsx_path), 1, 99999)):
+    with patch("api_service.taxvahan_api.fetch_manual_challans", return_value=[_main_api_challan()]), \
+         patch("api_service.run_fetch", return_value=(str(xlsx_path), 1, 99999)):
         api_service._run_verify_job(job_id, req)
 
     with jobs_lock:
@@ -157,9 +198,7 @@ def test_run_verify_job_matches_a_challan(tmp_path, monkeypatch):
             "id": job_id, "tan": "TESTTAN1234A", "type": "verify",
             "status": "pending", "created_at": "2026-07-22T00:00:00",
         }
-    req = VerifyChallansRequest(
-        tan="TESTTAN1234A", password="x", manual_challans=[_manual_item()],
-    )
+    req = VerifyChallansRequest(**_verify_body())
 
     xlsx_path = tmp_path / "fake.xlsx"
     json_path = tmp_path / "fake.json"
@@ -168,7 +207,8 @@ def test_run_verify_job_matches_a_challan(tmp_path, monkeypatch):
         '"totalAmt": 52830, "crn": "26050700123452KKBK"}]'
     )
 
-    with patch("api_service.run_fetch", return_value=(str(xlsx_path), 1, 52830)):
+    with patch("api_service.taxvahan_api.fetch_manual_challans", return_value=[_main_api_challan()]), \
+         patch("api_service.run_fetch", return_value=(str(xlsx_path), 1, 52830)):
         api_service._run_verify_job(job_id, req)
 
     with jobs_lock:
