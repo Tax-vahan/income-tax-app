@@ -16,6 +16,7 @@ def _verify_body(**overrides):
         "financialYear": "2026-27",
         "quarter":       "Q1",
         "categoryId":    2,
+        "authToken":     "Bearer test-caller-token",
     }
     body.update(overrides)
     return body
@@ -207,9 +208,11 @@ def test_run_verify_job_matches_a_challan(tmp_path, monkeypatch):
         '"totalAmt": 52830, "crn": "26050700123452KKBK"}]'
     )
 
-    with patch("api_service.taxvahan_api.fetch_manual_challans", return_value=[_main_api_challan()]), \
+    with patch("api_service.taxvahan_api.fetch_manual_challans", return_value=[_main_api_challan()]) as mock_fetch_manual, \
          patch("api_service.run_fetch", return_value=(str(xlsx_path), 1, 52830)):
         api_service._run_verify_job(job_id, req)
+
+    assert mock_fetch_manual.call_args.kwargs["auth_token"] == "Bearer test-caller-token"
 
     with jobs_lock:
         job = jobs[job_id]

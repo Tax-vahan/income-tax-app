@@ -386,6 +386,10 @@ class VerifyChallansRequest(BaseModel):
     financialYear:  str
     quarter:        str
     categoryId:     int
+    # Forwarded verbatim as the Authorization header when calling
+    # api.taxvahan.com — the caller's own already-working credential,
+    # not a key this service holds. See fetcher/core/taxvahan_api.py.
+    authToken:      str
 
 
 class EntityRequest(BaseModel):
@@ -558,6 +562,7 @@ def _run_verify_job(job_id: str, req: VerifyChallansRequest) -> None:
             financial_year=req.financialYear,
             quarter=req.quarter,
             category_id=req.categoryId,
+            auth_token=req.authToken,
         )
     except Exception:
         logger.exception(
