@@ -328,3 +328,25 @@ One real gap was found and fixed: the websocket's failed-job branch sent a hardc
 (`"Unable to fetch manual challans from TaxVahan."` / `"Unable to fetch challans from Income Tax
 portal."`) were silently discarded over the websocket, even though `GET /tds/api/v1/jobs/{job_id}`
 already returned them correctly. Fixed with `job.get("error", "Job failed during execution.")`.
+
+## Addendum (2026-07-23): closed a cross-user job-listing leak
+
+Prompted by a question about multi-user session isolation: does User A's verify click ever expose
+data to User B? Per-job access was already correctly isolated — `GET /tds/api/v1/jobs/{job_id}` and
+`WS /tds/api/v1/jobs/{job_id}/ws` only return the one job matching the `job_id` a caller was issued
+(a random UUID4, not guessable). But two *other*, pre-existing endpoints undermined that isolation
+for anyone who could reach the service at all:
+
+- `GET /tds/api/v1/jobs` returned **every job from every caller**, full `result` payloads included —
+  removed entirely. No legitimate caller needs to enumerate other jobs; each caller already holds
+  its own `job_id` from the create response.
+- `GET /tds/api/v1/queue` returned aggregate counts *plus* `tan` and `job_id` for every running/
+  pending job — kept, but stripped down to aggregate counts only (`workers`, `running`, `pending`,
+  `capacity_remaining`). Still useful for ops/monitoring; no longer identifies who's running what.
+
+**Explicitly out of scope, and noted as a structural limit rather than "fixed":** this service has
+no concept of a logged-in end-user at all — only `job_id` and `TAN`. Whether a given user is even
+authorized to query a given TAN's data is an authorization decision that must happen in the main
+backend before it calls this service; this service can enforce "which job_id maps to which result,"
+not "which end-user may see which TAN." Building that would mean this service authenticating
+end-users itself — a materially bigger change, declined for now in favor of the contained fix above.

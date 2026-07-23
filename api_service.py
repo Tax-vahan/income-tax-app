@@ -808,45 +808,25 @@ async def get_job_data(job_id: str):
                             detail=f"Failed to read data file: {exc}")
 
 
-@app.get("/tds/api/v1/jobs")
-async def list_jobs():
-    with jobs_lock:
-        return list(jobs.values())
-
-
 @app.get("/tds/api/v1/queue")
 async def queue_status():
-    """Real-time view of running and pending jobs."""
+    """
+    Aggregate-only view of queue load. Deliberately excludes any per-job
+    detail (job_id, tan, timestamps) — those identify which caller is doing
+    what and belong only behind the job_id-scoped endpoints
+    (GET /tds/api/v1/jobs/{job_id}, WS /tds/api/v1/jobs/{job_id}/ws), which
+    each caller can only reach with the specific job_id they were issued.
+    """
     with jobs_lock:
         all_jobs = list(jobs.values())
 
     running = [j for j in all_jobs if j.get("status") == "running"]
-    pending = sorted(
-        [j for j in all_jobs if j.get("status") == "pending"],
-        key=lambda j: j.get("created_at", ""),
-    )
+    pending = [j for j in all_jobs if j.get("status") == "pending"]
     return {
         "workers":            _WORKER_COUNT,
         "running":            len(running),
         "pending":            len(pending),
         "capacity_remaining": max(0, _MAX_QUEUED - len(pending)),
-        "running_jobs": [
-            {
-                "job_id":     j["id"],
-                "tan":        j["tan"],
-                "started_at": j.get("started_at"),
-            }
-            for j in running
-        ],
-        "queued_jobs": [
-            {
-                "job_id":         j["id"],
-                "tan":            j["tan"],
-                "queue_position": i + 1,
-                "waiting_since":  j.get("created_at"),
-            }
-            for i, j in enumerate(pending)
-        ],
     }
 
 
