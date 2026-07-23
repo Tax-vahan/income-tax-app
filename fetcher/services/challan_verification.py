@@ -148,3 +148,28 @@ def verify_challans(
         "governmentFetched": len(government),
         "details":           details,
     }
+
+
+def filter_eligible_manual_challans(challan_list: list[dict]) -> list[dict]:
+    """
+    From the main TaxVahan backend's /api/challan/fetch response, keep only
+    challans eligible for TRACES verification — SectionCode is null/empty AND
+    TDS Deposit By Book Entry is not 'Y' — and map them into the manual-challan
+    shape used by compute_date_range()/verify_challans().
+    """
+    eligible = []
+    for c in challan_list:
+        section_code = c.get("sectionCode")
+        if section_code not in (None, ""):
+            continue
+        book_entry = str(c.get("tdsDepositByBook") or "").strip().upper()
+        if book_entry == "Y":
+            continue
+        eligible.append({
+            "id":            str(c.get("id")),
+            "voucherNo":     c.get("challanVoucherNo"),
+            "bsrCode":       c.get("bsrCode"),
+            "dateOfDeposit": c.get("dateOfDeposit"),
+            "totalAmount":   c.get("totalTaxDeposit"),
+        })
+    return eligible
