@@ -110,7 +110,43 @@ def test_run_verify_job_completes_with_empty_portal_response(tmp_path, monkeypat
     assert job["status"] == "completed"
     assert job["result"]["message"] == "No challans found on the government portal for the selected date range."
     assert job["result"]["verified"] == 0
+    assert job["result"]["notFound"] == 1
+    assert job["result"]["amountNotVerified"] == 0
     assert job["result"]["notVerified"] == 1
+    assert job["result"]["details"][0]["status"] == "Not Found"
+
+
+def test_run_verify_job_marks_amount_not_verified(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_service, "DOWNLOADS_DIR", str(tmp_path))
+    job_id = "job-amount-mismatch"
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id, "tan": "TESTTAN1234A", "type": "verify",
+            "status": "pending", "created_at": "2026-07-22T00:00:00",
+        }
+    req = VerifyChallansRequest(
+        tan="TESTTAN1234A", password="x", manual_challans=[_manual_item()],
+    )
+
+    xlsx_path = tmp_path / "fake.xlsx"
+    json_path = tmp_path / "fake.json"
+    # Same BSR/voucher/date as _manual_item(), but a different amount.
+    json_path.write_text(
+        '[{"bsrCode": "0180002", "challanNum": "37358", "tenderDt": "07/05/2026", '
+        '"totalAmt": 99999, "crn": "26050700123452KKBK"}]'
+    )
+
+    with patch("api_service.run_fetch", return_value=(str(xlsx_path), 1, 99999)):
+        api_service._run_verify_job(job_id, req)
+
+    with jobs_lock:
+        job = jobs[job_id]
+    assert job["status"] == "completed"
+    assert job["result"]["verified"] == 0
+    assert job["result"]["amountNotVerified"] == 1
+    assert job["result"]["notFound"] == 0
+    assert job["result"]["details"][0]["status"] == "Amount Not Verified"
+    assert job["result"]["details"][0]["matchedCrn"] == "26050700123452KKBK"
 
 
 def test_run_verify_job_matches_a_challan(tmp_path, monkeypatch):
