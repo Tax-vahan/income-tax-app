@@ -290,3 +290,26 @@ Two distinct job-failure messages now exist, so a caller/operator can tell which
 synchronous "no manual challans" short-circuit and the 422 unparseable-date check both moved out of
 `create_verify_job` and into the job runner as job-level outcomes — the endpoint now always creates
 a job (dedup/queue-capacity checks aside), consistent with `/fetch`'s existing behavior.
+
+## Addendum (2026-07-23): token-forwarding instead of a static service key
+
+The previous addendum specified a fixed `TAXVAHAN_API_KEY` service key, sent as
+`Authorization: Bearer <key>`, confirmed with the user at the time as the intended auth model. In
+a real deployment this returned `401 Unauthorized` from `api.taxvahan.com`. Root-caused by checking
+the running container directly (`docker exec tds-pan-api env`): `TAXVAHAN_API_KEY` was never set,
+so every call sent an empty bearer token — but that also exposed a deeper problem, that no service
+key mechanism was ever confirmed to exist on the main backend's side. The only auth flow proven to
+work was the browser's own authenticated session (the 200 OK captured earlier), not a static key
+this service could hold.
+
+**Decision:** switch to token-forwarding. `VerifyChallansRequest` gains a required `authToken`
+field — the caller's own Authorization header value for `api.taxvahan.com` (whatever format it
+already uses, e.g. `"Bearer <jwt>"`) — forwarded verbatim by
+`taxvahan_api.fetch_manual_challans(auth_token=...)`. This service no longer holds or manages any
+credential for that call; `TAXVAHAN_API_KEY` is removed from `config.py` and `.env.example`
+entirely (not deprecated-but-kept — YAGNI, and a stale unused env var is worse than none). Only
+`TAXVAHAN_API_BASE` remains as service-level config, since the base URL isn't caller-specific.
+
+This is strictly more robust than a static key: it reuses auth already proven to work, needs no new
+secret provisioned or rotated on this service, and doesn't depend on the main backend building an
+auth path that may not exist.
