@@ -83,7 +83,7 @@ Response:
 - `POST /tds/api/v1/fetch`: Queues a background fetch operation.
 - `GET /tds/api/v1/jobs/{job_id}`: Polls fetch completion status.
 - `POST /tds/api/v1/entity`: Retrieves the Deductor entity profile.
-- `POST /tds/api/v1/challan/verify`: Queues a background job that compares caller-supplied manual challans against TRACES data for the date range spanning them, and returns a Verified/Not Verified result per challan via the same job-polling mechanism as `/fetch`.
+- `POST /tds/api/v1/challan/verify`: Given `{tan, password, deductorId, financialYear, quarter, categoryId}`, queues a background job that fetches manually entered challans from the main TaxVahan API (`api.taxvahan.com/api/challan/fetch`), filters out anything with a `SectionCode` or `BookEntry = Yes`, compares the rest against TRACES data for the date range they span, and returns each challan's status — `Verified`, `Amount Not Verified`, or `Not Found` — via the same job-polling mechanism as `/fetch`.
 
 ### PAN Verification Endpoints
 - `POST /pan-verification/login/init`: Yields a Session ID and a base64 Captcha.

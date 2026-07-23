@@ -236,3 +236,57 @@ The same follow-up doc restated Steps 1 and 5 (querying the DB for eligible manu
 excluding non-null `SectionCode` and `BookEntry = Yes` — and persisting verification status back to
 the DB). Per the same decision recorded above, those remain the other backend's responsibility;
 this repo's scope is unchanged (stateless matching only, no DB access).
+
+## Addendum (2026-07-23): this service auto-fetches manual challans
+
+The user surfaced the actual mechanism the main TaxVahan backend uses to read its own manual
+challans: a REST API, `POST https://api.taxvahan.com/api/challan/fetch` (distinct from
+`py-api.taxvahan.com`, the TRACES fetch this service already drives), taking
+`{deductorId, financialYear, quarter, categoryId, pageNumber, pageSize}` and returning a paginated
+`challanList`. This is not database access — it's an HTTP call to an already-existing API, no
+different in kind from the TRACES fetch this service already performs. Given that, the "DB access"
+concern from the two earlier addenda doesn't apply here: **this service now calls that API itself**,
+instead of requiring the caller to build and send the `manual_challans` array.
+
+**Request contract change (breaking):** `POST /tds/api/v1/challan/verify` drops `manual_challans`
+entirely. It now takes:
+
+```json
+{
+  "tan": "PTLA13241E", "password": "...",
+  "deductorId": "404868", "financialYear": "2026-27", "quarter": "Q1", "categoryId": 2
+}
+```
+
+`financialYear` becomes required (it's no longer TRACES-only metadata — it's a required parameter
+for the `api.taxvahan.com` call too). This is a breaking change to the contract from the first
+addendum, judged acceptable because nothing in production was calling it yet (only manual Swagger
+testing).
+
+**Authentication:** confirmed with the user as a fixed service key — `TAXVAHAN_API_KEY` env var,
+sent as `Authorization: Bearer <key>` on every call to `api.taxvahan.com`. Added alongside
+`TAXVAHAN_API_BASE` (default `https://api.taxvahan.com`) in `fetcher/utils/config.py` and
+`.env.example`, following the same pattern as the existing TRACES `BASE`/`API_BASE` constants. The
+actual key value is supplied at deploy time, same as TAN/password credentials already are.
+
+**New job runner flow** (`_run_verify_job` in `api_service.py`):
+
+```
+1. taxvahan_api.fetch_manual_challans(deductorId, financialYear, quarter, categoryId)
+     — new client, fetcher/core/taxvahan_api.py, paginates until totalRows is reached
+2. challan_verification.filter_eligible_manual_challans(raw_challans)
+     — SectionCode null/empty AND BookEntry != 'Y' (Step 1's rule), maps fields into
+       the manual-challan shape verify_challans() already expects
+3. If nothing eligible → job completes with "No manual challans found.", TRACES is
+   never touched
+4. Otherwise: compute_date_range → run_fetch (TRACES, unchanged) → verify_challans (unchanged)
+```
+
+Two distinct job-failure messages now exist, so a caller/operator can tell which system failed:
+`"Unable to fetch manual challans from TaxVahan."` (step 1 failed) vs.
+`"Unable to fetch challans from Income Tax portal."` (TRACES failed, unchanged from before).
+
+**Endpoint simplification:** since eligibility can only be known after an external call, the
+synchronous "no manual challans" short-circuit and the 422 unparseable-date check both moved out of
+`create_verify_job` and into the job runner as job-level outcomes — the endpoint now always creates
+a job (dedup/queue-capacity checks aside), consistent with `/fetch`'s existing behavior.
