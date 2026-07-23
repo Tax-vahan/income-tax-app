@@ -313,3 +313,18 @@ entirely (not deprecated-but-kept — YAGNI, and a stale unused env var is worse
 This is strictly more robust than a static key: it reuses auth already proven to work, needs no new
 secret provisioned or rotated on this service, and doesn't depend on the main backend building an
 auth path that may not exist.
+
+## Addendum (2026-07-23): websocket and TRACES session — already covered
+
+Confirmed by request: `WS /tds/api/v1/jobs/{job_id}/ws` needed no new endpoint for verify jobs — it
+was already generic, keyed only on `job_id` in the shared `jobs` dict, so it works identically for
+`fetch` and `verify`. Likewise, the TRACES login session (`SESSION_FILE`/`SESSION_TTL` reuse in
+`fetcher/core/auth.py`) is already inherited for free, since `_run_verify_job` calls the same
+`run_fetch()` `/fetch` does. Neither needed new code.
+
+One real gap was found and fixed: the websocket's failed-job branch sent a hardcoded
+`"Job failed during execution."` instead of the job's actual `error` field — harmless for `/fetch`
+(which never sets one) but meant verify's specific failure messages
+(`"Unable to fetch manual challans from TaxVahan."` / `"Unable to fetch challans from Income Tax
+portal."`) were silently discarded over the websocket, even though `GET /tds/api/v1/jobs/{job_id}`
+already returned them correctly. Fixed with `job.get("error", "Job failed during execution.")`.

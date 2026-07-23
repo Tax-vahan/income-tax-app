@@ -759,7 +759,7 @@ async def job_websocket(websocket: WebSocket, job_id: str):
             elif job["status"] == "completed":
                 msg["result"] = job.get("result", {})
             elif job["status"] == "failed":
-                msg["error"] = "Job failed during execution."
+                msg["error"] = job.get("error", "Job failed during execution.")
                 
             await websocket.send_json(msg)
             

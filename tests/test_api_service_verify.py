@@ -219,3 +219,32 @@ def test_run_verify_job_matches_a_challan(tmp_path, monkeypatch):
     assert job["status"] == "completed"
     assert job["result"]["verified"] == 1
     assert job["result"]["details"][0]["matchedCrn"] == "26050700123452KKBK"
+
+
+def test_websocket_relays_the_specific_job_error_message():
+    job_id = "job-ws-fail"
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id, "tan": "TESTTAN1234A", "type": "verify",
+            "status": "failed", "created_at": "2026-07-22T00:00:00",
+            "completed_at": "2026-07-22T00:00:05",
+            "error": "Unable to fetch manual challans from TaxVahan.",
+        }
+    with client.websocket_connect(f"/tds/api/v1/jobs/{job_id}/ws") as ws:
+        msg = ws.receive_json()
+    assert msg["status"] == "failed"
+    assert msg["error"] == "Unable to fetch manual challans from TaxVahan."
+
+
+def test_websocket_falls_back_to_generic_message_when_no_error_set():
+    job_id = "job-ws-fail-no-error"
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id, "tan": "TESTTAN1234A", "type": "fetch",
+            "status": "failed", "created_at": "2026-07-22T00:00:00",
+            "completed_at": "2026-07-22T00:00:05",
+        }
+    with client.websocket_connect(f"/tds/api/v1/jobs/{job_id}/ws") as ws:
+        msg = ws.receive_json()
+    assert msg["status"] == "failed"
+    assert msg["error"] == "Job failed during execution."
