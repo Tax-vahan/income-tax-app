@@ -105,15 +105,31 @@ def test_multiple_verified_challans():
     assert result["notVerified"] == 0
 
 
-def test_no_matches():
+def test_no_matches_marks_not_found():
     manual = [_manual("m1", "0180002", "37358", "07/05/2026", 52830)]
     government = [_gov("0180002", "99999", "07/05/2026", 52830, "CRNX")]
     result = verify_challans(manual, government)
     assert result["verified"] == 0
+    assert result["notFound"] == 1
+    assert result["amountNotVerified"] == 0
     assert result["notVerified"] == 1
-    assert result["details"][0]["status"] == "Not Verified"
+    assert result["details"][0]["status"] == "Not Found"
     assert result["details"][0]["matchedCrn"] is None
     assert result["message"] == "Verification completed. 0 challans verified."
+
+
+def test_amount_mismatch_marks_amount_not_verified():
+    # BSR + Voucher + Date all match, but the amount differs — per spec this
+    # is a distinct status from "Not Found", not just "Not Verified".
+    manual = [_manual("m1", "0180002", "37358", "07/05/2026", 52830)]
+    government = [_gov("0180002", "37358", "07/05/2026", 99999, "CRN1")]
+    result = verify_challans(manual, government)
+    assert result["verified"] == 0
+    assert result["amountNotVerified"] == 1
+    assert result["notFound"] == 0
+    assert result["notVerified"] == 1
+    assert result["details"][0]["status"] == "Amount Not Verified"
+    assert result["details"][0]["matchedCrn"] == "CRN1"
 
 
 def test_duplicate_voucher_numbers_different_bsr_codes():
@@ -139,12 +155,15 @@ def test_amount_normalization_in_matching():
     assert result["details"][0]["status"] == "Verified"
 
 
-def test_empty_government_list_marks_all_not_verified():
+def test_empty_government_list_marks_all_not_found():
     manual = [_manual("m1", "0180002", "37358", "07/05/2026", 52830)]
     result = verify_challans(manual, [])
     assert result["verified"] == 0
+    assert result["notFound"] == 1
+    assert result["amountNotVerified"] == 0
     assert result["notVerified"] == 1
     assert result["governmentFetched"] == 0
+    assert result["details"][0]["status"] == "Not Found"
     assert result["message"] == "No challans found on the government portal for the selected date range."
 
 

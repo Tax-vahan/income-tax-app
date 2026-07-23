@@ -43,6 +43,16 @@ def build_key(bsr, voucher, date, amount) -> str:
     ))
 
 
+def build_partial_key(bsr, voucher, date) -> str:
+    """Same as build_key but without amount — used to detect an 'Amount Not
+    Verified' match (BSR + Voucher + Date agree, amount doesn't)."""
+    return "|".join((
+        normalize_bsr(bsr),
+        normalize_voucher(voucher),
+        normalize_date(date),
+    ))
+
+
 def compute_date_range(manual_challans: list[dict]) -> tuple[str, str]:
     """
     Return (from_date, to_date) as DD/MM/YYYY strings spanning every manual
@@ -70,29 +80,44 @@ def verify_challans(
     Compare manual challans against government-fetched challans using an
     O(n) composite-key lookup, and return the verification result payload.
 
+    Each manual challan resolves to one of three statuses:
+      - "Verified"             — BSR + Voucher + Date + Amount all match.
+      - "Amount Not Verified"  — BSR + Voucher + Date match, Amount doesn't.
+      - "Not Found"            — the BSR + Voucher + Date combination doesn't
+                                  match any government challan at all.
+
     Government field mapping (from the existing, unmodified enrich() output):
     bsrCode, challanNum (voucher/serial), tenderDt (falls back conceptually
     to paymentDt upstream), totalAmt.
     """
-    gov_index: dict = {}
+    full_index: dict = {}
+    partial_index: dict = {}
     for g in government:
-        key = build_key(
-            g.get("bsrCode"), g.get("challanNum"),
-            g.get("tenderDt") or g.get("paymentDt"), g.get("totalAmt"),
-        )
-        gov_index[key] = g.get("crn")
+        bsr, voucher = g.get("bsrCode"), g.get("challanNum")
+        date, amount = g.get("tenderDt") or g.get("paymentDt"), g.get("totalAmt")
+        crn = g.get("crn")
+        full_index[build_key(bsr, voucher, date, amount)] = crn
+        partial_index[build_partial_key(bsr, voucher, date)] = crn
 
     details = []
-    verified = 0
+    verified = amount_not_verified = not_found = 0
     for item in manual:
-        key = build_key(
-            item.get("bsrCode"), item.get("voucherNo"),
-            item.get("dateOfDeposit"), item.get("totalAmount"),
-        )
-        matched_crn = gov_index.get(key)
-        status = "Verified" if matched_crn is not None else "Not Verified"
-        if status == "Verified":
+        bsr, voucher = item.get("bsrCode"), item.get("voucherNo")
+        date, amount = item.get("dateOfDeposit"), item.get("totalAmount")
+
+        full_key = build_key(bsr, voucher, date, amount)
+        if full_key in full_index:
+            status, matched_crn = "Verified", full_index[full_key]
             verified += 1
+        else:
+            partial_key = build_partial_key(bsr, voucher, date)
+            if partial_key in partial_index:
+                status, matched_crn = "Amount Not Verified", partial_index[partial_key]
+                amount_not_verified += 1
+            else:
+                status, matched_crn = "Not Found", None
+                not_found += 1
+
         details.append({
             "id":         item.get("id"),
             "voucherNo":  item.get("voucherNo"),
@@ -101,7 +126,7 @@ def verify_challans(
         })
 
     total = len(manual)
-    not_verified = total - verified
+    not_verified = amount_not_verified + not_found
 
     if not government:
         message = "No challans found on the government portal for the selected date range."
@@ -115,6 +140,8 @@ def verify_challans(
         "message":           message,
         "totalManual":       total,
         "verified":          verified,
+        "amountNotVerified": amount_not_verified,
+        "notFound":          not_found,
         "notVerified":       not_verified,
         "fromDate":          from_date,
         "toDate":            to_date,
