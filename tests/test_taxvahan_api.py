@@ -40,6 +40,7 @@ def test_fetch_manual_challans_forwards_auth_token_verbatim(monkeypatch):
         "categoryId":    2,
         "pageNumber":    1,
         "pageSize":      50,
+        "status":        "All",
     }
     # Forwarded exactly as supplied — no "Bearer " prefix added or assumed by us.
     assert call.kwargs["headers"] == {"Authorization": "Bearer some-caller-supplied-jwt"}

@@ -39,6 +39,11 @@ def _fetch_page(
         "categoryId":    category_id,
         "pageNumber":    page_number,
         "pageSize":      page_size,
+        # Required by api.taxvahan.com as of 2026-07-25 (confirmed via a live
+        # browser capture of the working frontend call) — not optional despite
+        # not appearing in the original capture this integration was built
+        # against.
+        "status":        "All",
     }
     headers = {"Authorization": auth_token}
     resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
