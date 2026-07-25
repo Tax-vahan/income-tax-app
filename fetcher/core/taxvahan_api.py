@@ -42,6 +42,16 @@ def _fetch_page(
     }
     headers = {"Authorization": auth_token}
     resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    if not resp.ok:
+        # Never logged: the Authorization header value itself. Everything else
+        # here is safe — it's exactly what we sent and what the main backend's
+        # API sent back, needed to diagnose 4xx responses that otherwise show
+        # up as a bare "400 Bad Request" with no indication of which field or
+        # rule tripped it.
+        log.error(
+            "TaxVahan challan/fetch %s for payload %s: %s",
+            resp.status_code, payload, resp.text[:2000],
+        )
     resp.raise_for_status()
     return resp.json()
 

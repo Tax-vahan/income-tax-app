@@ -6,10 +6,12 @@ import requests
 from fetcher.core import taxvahan_api
 
 
-def _resp(json_data, status_code=200):
+def _resp(json_data, status_code=200, text=None):
     resp = MagicMock()
     resp.status_code = status_code
+    resp.ok = status_code < 400
     resp.json.return_value = json_data
+    resp.text = text if text is not None else str(json_data)
     if status_code >= 400:
         resp.raise_for_status.side_effect = requests.exceptions.HTTPError(response=resp)
     else:
@@ -88,3 +90,23 @@ def test_fetch_manual_challans_raises_on_http_error():
                 deductor_id="404868", financial_year="2026-27", quarter="Q1", category_id=2,
                 auth_token="token",
             )
+
+
+def test_fetch_manual_challans_logs_response_body_on_http_error(caplog):
+    error_page = _resp(
+        {"detail": "categoryId must be one of [1, 2, 3, 4]"},
+        status_code=400,
+        text='{"detail": "categoryId must be one of [1, 2, 3, 4]"}',
+    )
+    with patch("fetcher.core.taxvahan_api.requests.post", return_value=error_page):
+        with caplog.at_level("ERROR"):
+            with pytest.raises(requests.exceptions.HTTPError):
+                taxvahan_api.fetch_manual_challans(
+                    deductor_id="404868", financial_year="2026-27", quarter="Q1", category_id=2,
+                    auth_token="token",
+                )
+
+    assert any(
+        "400" in rec.message and "categoryId must be one of" in rec.message
+        for rec in caplog.records
+    )
