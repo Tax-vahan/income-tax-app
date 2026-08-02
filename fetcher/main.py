@@ -5,7 +5,7 @@ Public interface (used by api_service.py and the CLI):
     from fetcher.main import run_fetch
     run_fetch(cfg_override)  →  (output_path, record_count, grand_total)
 
-CLI usage (from tds_api/ directory):
+CLI usage (from tds_api/ directory): 
     python -m fetcher.main --tan XXXX --password YYYY --from-date 01/01/2026 --to-date 31/03/2026
 
 Architecture
