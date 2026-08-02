@@ -15,7 +15,7 @@ from tbr.services.tbr_service import TBRService, get_tbr_service
 from tbr.utils.logger import get_logger
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/tbr", tags=["Transaction Based Report"])
+router = APIRouter(prefix="/tbr")
 
 
 @router.post(

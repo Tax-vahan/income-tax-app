@@ -12,9 +12,9 @@ from typing import Optional
 from pydantic import BaseModel
 
 from fetcher.main import run_fetch
-from fetcher.core.api  import fetch_entity_profile
+from fetcher.core.api  import fetch_entity_profile, fetch_csi_file
 from fetcher.core      import auth as _auth
-from fetcher.utils.config import CONFIG as _CFG
+from fetcher.utils.config import CONFIG as _CFG, act_type_for_fy
 from fetcher.services import challan_verification
 from fetcher.core import taxvahan_api
 
@@ -326,6 +326,8 @@ def _worker() -> None:
                 _run_view_filed_forms_job(job_id, req)
             elif kind == "verify":
                 _run_verify_job(job_id, req)
+            elif kind == "csi":
+                _run_csi_job(job_id, req)
             else:
                 logger.error("Unknown job kind: %s", kind)
         except Exception:
@@ -401,6 +403,14 @@ class ViewFiledFormsRequest(BaseModel):
     tan:          str
     password:     str
     form_type_cd: str
+
+
+class CSIRequest(BaseModel):
+    tan:           str
+    password:      str
+    from_date:     str   # DD/MM/YYYY, consistent with FetchRequest
+    to_date:       str   # DD/MM/YYYY
+    financialYear: Optional[str] = None
 
 
 # ── Job runners (called by worker threads, never the request thread) ───────────
@@ -543,6 +553,56 @@ def _run_view_filed_forms_job(job_id: str, req: ViewFiledFormsRequest) -> None:
         logger.info("ViewFiledForms job %s done — %s", job_id, out_path)
     except Exception:
         logger.exception("ViewFiledForms job %s failed", job_id)
+        _patch_job(job_id, status="failed",
+                   completed_at=datetime.now().isoformat())
+
+
+def _run_csi_job(job_id: str, req: CSIRequest) -> None:
+    logger.info("CSI job %s started for TAN %s, %s -> %s", job_id, req.tan, req.from_date, req.to_date)
+    _patch_job(job_id, status="running", started_at=datetime.now().isoformat())
+    cfg = {**_CFG, "TAN": req.tan, "PASSWORD": req.password}
+    try:
+        # Portal wants DD/MM/YYYY everywhere except downloadCSI, which takes
+        # ISO YYYY-MM-DD (confirmed via live browser capture).
+        from_date_iso = datetime.strptime(req.from_date, "%d/%m/%Y").strftime("%Y-%m-%d")
+        to_date_iso   = datetime.strptime(req.to_date,   "%d/%m/%Y").strftime("%Y-%m-%d")
+        act_type      = act_type_for_fy(req.financialYear, req.from_date)
+
+        session, driver, cdp_capture = _auth.get_session(cfg)
+        if session is None:
+            raise RuntimeError("Session establishment failed")
+
+        resp = fetch_csi_file(session, req.tan, from_date_iso, to_date_iso, act_type)
+
+        if cdp_capture:
+            cdp_capture.stop()
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+        csi_text = resp.get("csiResponse")
+        if not csi_text:
+            raise RuntimeError("Portal returned no csiResponse")
+
+        job_dir  = os.path.join(DOWNLOADS_DIR, job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        csi_path = os.path.join(job_dir, f"CSI_{req.tan}.csi")
+        with open(csi_path, "w", encoding="utf-8") as f:
+            f.write(csi_text)
+
+        _patch_job(
+            job_id,
+            status="completed",
+            completed_at=datetime.now().isoformat(),
+            # Reuses the existing /jobs/{id}/download endpoint, which serves
+            # whatever file is at result.excel_file regardless of extension.
+            result={"excel_file": csi_path},
+        )
+        logger.info("CSI job %s done — %s", job_id, csi_path)
+    except Exception:
+        logger.exception("CSI job %s failed", job_id)
         _patch_job(job_id, status="failed",
                    completed_at=datetime.now().isoformat())
 
@@ -753,11 +813,12 @@ async def job_websocket(websocket: WebSocket, job_id: str):
                 break
             
             job = jobs[job_id]
-            msg = {"status": job["status"]}
+            msg = {"job_id": job_id, "type": job.get("type", "fetch"), "status": job["status"]}
             if job["status"] == "pending":
                 msg["queue_position"] = _queue_position(job_id)
             elif job["status"] == "completed":
                 msg["result"] = job.get("result", {})
+                msg["download_url"] = f"/tds/api/v1/jobs/{job_id}/download"
             elif job["status"] == "failed":
                 msg["error"] = job.get("error", "Job failed during execution.")
                 
@@ -933,6 +994,39 @@ async def view_filed_forms(req: ViewFiledFormsRequest):
         }
     _save_jobs()
     _job_queue.put((job_id, "view_filed_forms", req))
+    pos = _queue_position(job_id)
+    return {"job_id": job_id, "status": "pending", "queue_position": pos}
+
+
+@app.post("/tds/api/v1/challan/csi")
+async def create_csi_job(req: CSIRequest):
+    """Download the CSI (Challan Status Inquiry) file for a TAN/date range."""
+    existing = _active_tan_job(req.tan, "csi")
+    if existing:
+        return {
+            "job_id":  existing["id"],
+            "status":  existing["status"],
+            "message": f"A CSI job for TAN {req.tan} is already {existing['status']}.",
+        }
+
+    pending = _pending_count()
+    if pending >= _MAX_QUEUED:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Server busy — {pending} jobs queued. Try again later.",
+        )
+
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {
+            "id":         job_id,
+            "tan":        req.tan,
+            "type":       "csi",
+            "status":     "pending",
+            "created_at": datetime.now().isoformat(),
+        }
+    _save_jobs()
+    _job_queue.put((job_id, "csi", req))
     pos = _queue_position(job_id)
     return {"job_id": job_id, "status": "pending", "queue_position": pos}
 

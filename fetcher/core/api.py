@@ -165,6 +165,48 @@ def fetch_view_filed_forms(
     return result
 
 
+@with_retry(max_retries=CONFIG["RETRY_COUNT"], base_delay=1.0)
+def fetch_csi_file(
+    session:        requests.Session,
+    tan:            str,
+    from_date_iso:  str,
+    to_date_iso:    str,
+    act_type:       str,
+) -> dict:
+    """
+    Download the CSI (Challan Status Inquiry) file text for a date range.
+
+    Endpoint: /paymentapi/auth/challan/downloadCSI
+    Response shape: {header, messages, errors, csiResponse} where csiResponse
+    is the raw newline-delimited CSI file content.
+
+    from_date_iso / to_date_iso must be "YYYY-MM-DD" (confirmed via live
+    browser capture — unlike most other portal endpoints here, which take
+    DD/MM/YYYY). Callers convert before calling this function; act_type_for_fy()
+    still expects DD/MM/YYYY, so compute act_type at the call site.
+    """
+    url = API_BASE + "/paymentapi/auth/challan/downloadCSI"
+    payload = {
+        "header": {"formName": "PO-03-PYMNT"},
+        "formData": {
+            "pan":              tan,
+            "actType":          act_type,
+            "loggedInUserID":   tan,
+            "loggedInUserType": "TDS",
+            "fromDate":         from_date_iso,
+            "toDate":           to_date_iso,
+        },
+    }
+    log.info("Fetching CSI file for TAN=%s  %s -> %s", tan, from_date_iso, to_date_iso)
+    result = _post(session, url, payload, timeout=CONFIG["TIMEOUT"])
+    if not result.get("csiResponse"):
+        log.error(
+            "downloadCSI returned no csiResponse for TAN=%s  %s -> %s: %s",
+            tan, from_date_iso, to_date_iso, result,
+        )
+    return result
+
+
 def extend_session(session: requests.Session, tan: str) -> bool:
     """Ping extendSession to keep the backend alive."""
     try:
