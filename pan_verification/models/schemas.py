@@ -69,3 +69,39 @@ class BulkPanStatusResponse(BaseModel):
     token_number: str = Field(..., description="TRACES token number")
     status: str = Field(..., description="Status of the request (e.g., Submitted, Available)")
     is_ready: bool = Field(..., description="Whether the file is ready to download")
+
+
+class ChallanBinSearchRequest(BaseModel):
+    """Manual flow: session_id from /login/init + /login/complete (same as /pan/verify)."""
+    session_id: str = Field(..., description="Active session ID from /login/complete")
+    from_date: str = Field(..., description="DD-MM-YYYY (Transfer Voucher / period-of-payment from date)")
+    to_date: str = Field(..., description="DD-MM-YYYY")
+    page: int = Field(0, description="0-based page number")
+    size: int = Field(10, description="Page size")
+
+
+class ChallanBinExportRequest(BaseModel):
+    """Manual flow: session_id from /login/init + /login/complete (same as /pan/verify)."""
+    session_id: str = Field(..., description="Active session ID from /login/complete")
+    from_date: str = Field(..., description="DD-MM-YYYY")
+    to_date: str = Field(..., description="DD-MM-YYYY")
+    format: str = Field("EXCEL", description='"PDF", "CSV", or "EXCEL" (the dropdown funcCodeDesc, not funcCode)')
+
+
+class ChallanBinAutoSearchRequest(BaseModel):
+    """Auto-login flow: solves captcha via OCR — less reliable, see /login/init for the manual alternative."""
+    tan: str = Field(..., description="Tax Account Number (10 characters)")
+    password: str = Field(..., description="TRACES login password")
+    from_date: str = Field(..., description="DD-MM-YYYY")
+    to_date: str = Field(..., description="DD-MM-YYYY")
+    page: int = Field(0, description="0-based page number")
+    size: int = Field(10, description="Page size")
+
+
+class ChallanBinAutoExportRequest(BaseModel):
+    """Auto-login flow: solves captcha via OCR — less reliable, see /login/init for the manual alternative."""
+    tan: str = Field(..., description="Tax Account Number (10 characters)")
+    password: str = Field(..., description="TRACES login password")
+    from_date: str = Field(..., description="DD-MM-YYYY")
+    to_date: str = Field(..., description="DD-MM-YYYY")
+    format: str = Field("EXCEL", description='"PDF", "CSV", or "EXCEL" (the dropdown funcCodeDesc, not funcCode)')

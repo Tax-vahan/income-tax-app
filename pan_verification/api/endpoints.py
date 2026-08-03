@@ -16,9 +16,14 @@ from pan_verification.models.schemas import (
     BulkPanStatusResponse,
     ErrorResponse,
     ResendCaptchaRequest,
+    ChallanBinSearchRequest,
+    ChallanBinExportRequest,
+    ChallanBinAutoSearchRequest,
+    ChallanBinAutoExportRequest,
 )
 from pan_verification.services.login_service import TracesLoginService
 from pan_verification.services.pan_service import PanVerificationService
+from pan_verification.services.challan_bin_service import ChallanBinService
 from pan_verification.core.session_manager import get_session_manager
 from pan_verification.utils.logger import get_logger
 from pan_verification.utils.validators import (
@@ -40,6 +45,10 @@ def get_login_service() -> TracesLoginService:
 
 def get_pan_service() -> PanVerificationService:
     return PanVerificationService()
+
+
+def get_challan_bin_service() -> ChallanBinService:
+    return ChallanBinService()
 
 
 # ===========================================================================
@@ -463,6 +472,272 @@ async def auto_pan_download(
 
 
 # ===========================================================================
+# CHALLAN/BIN STATUS (TRACES Deductor Dashboard > Challan Management)
+# ===========================================================================
+
+
+@router.get("/challan-bin/dropdown/form-types", tags=["Challan/BIN Status"])
+async def challan_bin_form_types(
+    tan: str,
+    password: str,
+    login_service: TracesLoginService = Depends(get_login_service),
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """Form types dropdown (24Q/138, 26Q/140, 27Q/144, 27EQ/143, ...)."""
+    try:
+        session_id = await _get_auto_session_id(tan, password, login_service)
+        return {"formType": await challan_bin_service.get_form_types(session_id)}
+    except Exception as e:
+        logger.error(f"Error fetching form types: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/challan-bin/dropdown/financial-years", tags=["Challan/BIN Status"])
+async def challan_bin_financial_years(
+    tan: str,
+    password: str,
+    login_service: TracesLoginService = Depends(get_login_service),
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """Financial year dropdown, e.g. {"funcCode": "2026", "funcCodeDesc": "2026-27"}."""
+    try:
+        session_id = await _get_auto_session_id(tan, password, login_service)
+        return {"financialYear": await challan_bin_service.get_financial_years(session_id)}
+    except Exception as e:
+        logger.error(f"Error fetching financial years: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/challan-bin/dropdown/quarters", tags=["Challan/BIN Status"])
+async def challan_bin_quarters(
+    tan: str,
+    password: str,
+    financial_year: str,
+    login_service: TracesLoginService = Depends(get_login_service),
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """Quarters for a financial year, e.g. financial_year=2025-26."""
+    try:
+        session_id = await _get_auto_session_id(tan, password, login_service)
+        return {"quarter": await challan_bin_service.get_quarters(session_id, financial_year)}
+    except Exception as e:
+        logger.error(f"Error fetching quarters: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/challan-bin/dropdown/consumption-status", tags=["Challan/BIN Status"])
+async def challan_bin_consumption_status(
+    tan: str,
+    password: str,
+    login_service: TracesLoginService = Depends(get_login_service),
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """Consumption status dropdown: Fully Consumed / Partially Consumed."""
+    try:
+        session_id = await _get_auto_session_id(tan, password, login_service)
+        return {"ConsumptionStatus": await challan_bin_service.get_consumption_statuses(session_id)}
+    except Exception as e:
+        logger.error(f"Error fetching consumption status: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/challan-bin/dropdown/challan-status", tags=["Challan/BIN Status"])
+async def challan_bin_challan_status(
+    tan: str,
+    password: str,
+    login_service: TracesLoginService = Depends(get_login_service),
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """BIN Status dropdown: Claimed (M) / Unclaimed (U)."""
+    try:
+        session_id = await _get_auto_session_id(tan, password, login_service)
+        return {"challanStatus": await challan_bin_service.get_challan_statuses(session_id)}
+    except Exception as e:
+        logger.error(f"Error fetching challan status: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/challan-bin/dropdown/formats", tags=["Challan/BIN Status"])
+async def challan_bin_export_formats(
+    tan: str,
+    password: str,
+    login_service: TracesLoginService = Depends(get_login_service),
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """Export format dropdown: PDF / CSV / EXCEL."""
+    try:
+        session_id = await _get_auto_session_id(tan, password, login_service)
+        return {"format": await challan_bin_service.get_export_formats(session_id)}
+    except Exception as e:
+        logger.error(f"Error fetching export formats: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/challan-bin/search", tags=["Challan/BIN Status"])
+async def challan_bin_search(
+    request: ChallanBinSearchRequest,
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """
+    "Period of payment" Challan/BIN status search — mirrors the Search
+    Criteria screen under Challan Management > Challan/BIN Status.
+
+    Manual-login flow (matches /pan/verify): call /login/init then
+    /login/complete first to solve the captcha yourself and get a
+    session_id, then pass that here. Use /challan-bin/auto/search instead
+    if you'd rather have the server solve the captcha via OCR (less
+    reliable — see that endpoint's docstring).
+
+    A portal response of {"status": 400, "message": "No Challans Found"}
+    is a normal empty result (not an error) and is returned as-is.
+    """
+    try:
+        is_valid, msg = validate_session_id(request.session_id)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid session ID: {msg}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Validation error")
+
+    try:
+        return await challan_bin_service.search_challan_bin(
+            session_id=request.session_id,
+            from_date=request.from_date,
+            to_date=request.to_date,
+            page=request.page,
+            size=request.size,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching Challan/BIN status: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/challan-bin/download", tags=["Challan/BIN Status"])
+async def challan_bin_download(
+    request: ChallanBinExportRequest,
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """
+    Download the Challan/BIN Status search result as a file (PDF/CSV/EXCEL),
+    matching the "Download" option on the TRACES Challan/BIN Status screen.
+
+    Manual-login flow — see /challan-bin/search docstring. Use
+    /challan-bin/auto/download for the OCR auto-login variant.
+    """
+    try:
+        is_valid, msg = validate_session_id(request.session_id)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid session ID: {msg}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Validation error")
+
+    try:
+        file_bytes, filename = await challan_bin_service.export_download(
+            session_id=request.session_id,
+            from_date=request.from_date,
+            to_date=request.to_date,
+            format_code=request.format,
+        )
+        return StreamingResponse(
+            io.BytesIO(file_bytes),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading Challan/BIN export: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/challan-bin/auto/search", tags=["Challan/BIN Status"])
+async def challan_bin_auto_search(
+    request: ChallanBinAutoSearchRequest,
+    login_service: TracesLoginService = Depends(get_login_service),
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """
+    Same as /challan-bin/search, but auto-logs in with tan+password if no
+    session is active yet (server solves the captcha via OCR, retrying up
+    to 3 times). OCR can misread the captcha and fail all 3 attempts —
+    if that happens, use the manual /login/init + /login/complete +
+    /challan-bin/search flow instead, where you read the captcha yourself.
+    """
+    try:
+        is_valid, msg = validate_tan(request.tan)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid TAN: {msg}")
+
+        is_valid, msg = validate_password(request.password)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid password: {msg}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Validation error")
+
+    try:
+        session_id = await _get_auto_session_id(request.tan, request.password, login_service)
+        return await challan_bin_service.search_challan_bin(
+            session_id=session_id,
+            from_date=request.from_date,
+            to_date=request.to_date,
+            page=request.page,
+            size=request.size,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching Challan/BIN status (auto): {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/challan-bin/auto/download", tags=["Challan/BIN Status"])
+async def challan_bin_auto_download(
+    request: ChallanBinAutoExportRequest,
+    login_service: TracesLoginService = Depends(get_login_service),
+    challan_bin_service: ChallanBinService = Depends(get_challan_bin_service),
+):
+    """Same as /challan-bin/download, but auto-logs in with tan+password — see /challan-bin/auto/search docstring."""
+    try:
+        is_valid, msg = validate_tan(request.tan)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid TAN: {msg}")
+
+        is_valid, msg = validate_password(request.password)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid password: {msg}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Validation error")
+
+    try:
+        session_id = await _get_auto_session_id(request.tan, request.password, login_service)
+        file_bytes, filename = await challan_bin_service.export_download(
+            session_id=session_id,
+            from_date=request.from_date,
+            to_date=request.to_date,
+            format_code=request.format,
+        )
+        return StreamingResponse(
+            io.BytesIO(file_bytes),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading Challan/BIN export (auto): {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===========================================================================
 # SESSION MANAGEMENT
 # ===========================================================================
 
@@ -492,6 +767,36 @@ async def get_session_status(
     except Exception as e:
         logger.error(f"Error checking session status: {str(e)}", exc_info=True)
         raise
+
+
+@router.get("/session/debug/{session_id}", tags=["Session Management"])
+async def debug_session(
+    session_id: str = Path(..., description="The session ID to inspect"),
+    login_service: TracesLoginService = Depends(get_login_service),
+):
+    """
+    TEMPORARY DEBUG ONLY — remove once the Challan/BIN 404 investigation is
+    done. Returns the session's stored access_token (decoded JWT claims) and
+    tan, with the password stripped, so it can be compared against a real
+    browser session's token.
+    """
+    session_data = await login_service.restore_session(session_id)
+    access_token = session_data.get("access_token")
+    claims = None
+    if access_token:
+        try:
+            import base64
+            import json as _json
+            payload_b64 = access_token.split(".")[1]
+            payload_b64 += "=" * (-len(payload_b64) % 4)
+            claims = _json.loads(base64.urlsafe_b64decode(payload_b64))
+        except Exception as e:
+            claims = {"decode_error": str(e)}
+    return {
+        "tan": session_data.get("tan"),
+        "access_token": access_token,
+        "access_token_claims": claims,
+    }
 
 
 @router.get("/health", tags=["Monitoring"])
