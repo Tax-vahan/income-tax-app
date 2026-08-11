@@ -145,18 +145,25 @@ def fetch_view_filed_forms(
     session: requests.Session,
     tan:     str,
     form_type_cd: str,
+    page_size: int = 100,
+    current_page: int = 0,
 ) -> dict:
     """
     Fetch filed forms for a specific form type.
     Endpoint: /servicesapi/auth/saveEntity
+
+    Payload confirmed from real browser traffic — identical shape regardless
+    of which "View Filed Forms" tab (Act 2025 / Act 1961 / Other Acts) is
+    selected on the portal; there is no act/year field here. The tabs are a
+    client-side split of formTypeCd (see act_bucket_for_form_type()).
     """
     url     = API_BASE + "/servicesapi/auth/saveEntity"
     payload = {
         "serviceName": "viewFiledForms",
         "entityNum": tan,
         "formTypeCd": form_type_cd,
-        "currentPage": "0",
-        "pageSize": "100",
+        "currentPage": str(current_page),
+        "pageSize": str(page_size),
         "filterParameterDetails": []
     }
     log.info("Fetching filed forms for TAN=%s Form=%s", tan, form_type_cd)

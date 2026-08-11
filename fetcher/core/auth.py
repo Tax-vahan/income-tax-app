@@ -614,16 +614,19 @@ def load_session(
 
 def validate_session(session: requests.Session, tan: str) -> bool:
     """
-    Check if the session is still valid via the dashboard endpoint.
+    Check if the session is still valid via extendSession — a POST endpoint
+    that keeps the backend session alive and is already used elsewhere
+    (fetcher.core.api.extend_session) for the same purpose. Previously this
+    called GET /loginapi/auth/dashboard, which the portal always answered
+    with HTTP 500 regardless of session validity, forcing every request to
+    fall back to a full fresh Selenium login.
     """
     try:
-        url = API_BASE + "/loginapi/auth/dashboard"
-        r   = session.get(url, timeout=10)
+        url = API_BASE + "/loginapi/auth/extendSession"
+        r   = session.post(url, json={"userId": tan}, timeout=10)
         if r.status_code == 200:
-            body = r.json()
-            if body.get("successFlag"):
-                log.info("Session validation: OK")
-                return True
+            log.info("Session validation: OK")
+            return True
         log.info("Session validation: FAILED (HTTP %s)", r.status_code)
     except Exception as exc:
         log.info("Session validation error: %s", exc)

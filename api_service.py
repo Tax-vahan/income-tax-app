@@ -8,13 +8,13 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 
 from fetcher.main import run_fetch
 from fetcher.core.api  import fetch_entity_profile, fetch_csi_file
 from fetcher.core      import auth as _auth
-from fetcher.utils.config import CONFIG as _CFG, act_type_for_fy
+from fetcher.utils.config import CONFIG as _CFG, act_type_for_fy, act_bucket_for_form_type
 from fetcher.services import challan_verification
 from fetcher.core import taxvahan_api
 
@@ -324,6 +324,8 @@ def _worker() -> None:
                 _run_entity_job(job_id, req)
             elif kind == "view_filed_forms":
                 _run_view_filed_forms_job(job_id, req)
+            elif kind == "view_filed_forms_dashboard":
+                _run_view_filed_forms_dashboard_job(job_id, req)
             elif kind == "verify":
                 _run_verify_job(job_id, req)
             elif kind == "csi":
@@ -403,6 +405,19 @@ class ViewFiledFormsRequest(BaseModel):
     tan:          str
     password:     str
     form_type_cd: str
+
+
+# Known formTypeCd values per "View Filed Forms" tab bucket (see
+# act_bucket_for_form_type()). Used as the default set when a caller asks
+# for the dashboard view without naming specific form types. Extend as new
+# form codes are observed on the portal.
+DEFAULT_FORM_TYPE_CDS = ["T143", "T140", "T138", "T144", "F27EQ", "F26Q", "F24Q", "F27Q"]
+
+
+class ViewFiledFormsDashboardRequest(BaseModel):
+    tan:           str
+    password:      str
+    form_type_cds: Optional[List[str]] = None  # defaults to DEFAULT_FORM_TYPE_CDS
 
 
 class CSIRequest(BaseModel):
@@ -517,6 +532,7 @@ def _run_view_filed_forms_job(job_id: str, req: ViewFiledFormsRequest) -> None:
         forms_data = resp.get("forms", [])
         extracted = []
         for form in forms_data:
+            form_type = form.get("formTypeCd")
             extracted.append({
                 "tempAckNo": form.get("tempAckNo"),
                 "ackDt": form.get("ackDt"),
@@ -525,8 +541,13 @@ def _run_view_filed_forms_job(job_id: str, req: ViewFiledFormsRequest) -> None:
                 "fillingMode": form.get("fillingMode"),
                 "activities": form.get("activities"),
                 "financialQrtr": form.get("financialQrtr"),
-                "formTypeCd": form.get("formTypeCd"),
+                "formTypeCd": form_type,
                 "refYear": form.get("refYear"),
+                "refYearType": form.get("refYearType"),
+                "formStatus": form.get("formStatus"),
+                "verStatus": form.get("verStatus"),
+                "transactionNo": form.get("transactionNo"),
+                "actBucket": act_bucket_for_form_type(form_type),
             })
 
         if cdp_capture:
@@ -553,6 +574,105 @@ def _run_view_filed_forms_job(job_id: str, req: ViewFiledFormsRequest) -> None:
         logger.info("ViewFiledForms job %s done — %s", job_id, out_path)
     except Exception:
         logger.exception("ViewFiledForms job %s failed", job_id)
+        _patch_job(job_id, status="failed",
+                   completed_at=datetime.now().isoformat())
+
+
+def _run_view_filed_forms_dashboard_job(job_id: str, req: ViewFiledFormsDashboardRequest) -> None:
+    """
+    Fetches viewFiledForms for each requested formTypeCd and buckets the
+    results into the portal's three "View Filed Forms" tabs (Act 2025 /
+    Act 1961 / Other Acts), one summary card per formTypeCd — mirroring
+    https://eportal.incometax.gov.in/iec/foservices/#/dashboard/statForms/viewFiledForms
+    """
+    form_type_cds = req.form_type_cds or DEFAULT_FORM_TYPE_CDS
+    logger.info("ViewFiledFormsDashboard job %s started for TAN %s, Forms=%s",
+                job_id, req.tan, form_type_cds)
+    _patch_job(job_id, status="running", started_at=datetime.now().isoformat())
+    cfg = {**_CFG, "TAN": req.tan, "PASSWORD": req.password}
+    try:
+        session, driver, cdp_capture = _auth.get_session(cfg)
+        if session is None:
+            raise RuntimeError("Session establishment failed")
+
+        from fetcher.core.api import fetch_view_filed_forms
+
+        buckets = {"act_2025": [], "act_1961": [], "other": []}
+        for form_type_cd in form_type_cds:
+            try:
+                resp = fetch_view_filed_forms(session, req.tan, form_type_cd)
+            except Exception:
+                logger.exception(
+                    "ViewFiledFormsDashboard job %s: fetch failed for form %s",
+                    job_id, form_type_cd,
+                )
+                continue
+
+            forms_data = resp.get("forms", []) or []
+            years = sorted(
+                {f.get("refYear") for f in forms_data if f.get("refYear") is not None},
+                reverse=True,
+            )
+            ref_year_type = next(
+                (f.get("refYearType") for f in forms_data if f.get("refYearType")),
+                None,
+            )
+            card = {
+                "formTypeCd": form_type_cd,
+                "filingsTillDate": resp.get("responseCount", len(forms_data)),
+                "recentYears": years[:2],
+                "refYearType": ref_year_type,
+                "forms": [
+                    {
+                        "tempAckNo": f.get("tempAckNo"),
+                        "ackDt": f.get("ackDt"),
+                        "ackNum": f.get("ackNum"),
+                        "filingTypeCd": f.get("filingTypeCd"),
+                        "financialQrtr": f.get("financialQrtr"),
+                        "refYear": f.get("refYear"),
+                        "refYearType": f.get("refYearType"),
+                        "formStatus": f.get("formStatus"),
+                        "verStatus": f.get("verStatus"),
+                    }
+                    for f in forms_data
+                ],
+            }
+            buckets[act_bucket_for_form_type(form_type_cd)].append(card)
+
+        if cdp_capture:
+            cdp_capture.stop()
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+        total_filed = sum(c["filingsTillDate"] for cards in buckets.values() for c in cards)
+        summary = {
+            "tan": req.tan,
+            "totalFormsFiledTillDate": total_filed,
+            "tabs": {
+                "Forms as per Income Tax Act 2025": buckets["act_2025"],
+                "Forms as per Income Tax Act 1961": buckets["act_1961"],
+                "Forms as per Other Acts":          buckets["other"],
+            },
+        }
+
+        form_dir = os.path.join(FILED_FORMS_DIR, req.tan)
+        os.makedirs(form_dir, exist_ok=True)
+        out_path = os.path.join(form_dir, f"{req.tan}_view_filed_forms_dashboard.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+
+        _patch_job(
+            job_id,
+            status="completed",
+            completed_at=datetime.now().isoformat(),
+            result={"json_file": out_path},
+        )
+        logger.info("ViewFiledFormsDashboard job %s done — %s", job_id, out_path)
+    except Exception:
+        logger.exception("ViewFiledFormsDashboard job %s failed", job_id)
         _patch_job(job_id, status="failed",
                    completed_at=datetime.now().isoformat())
 
@@ -998,6 +1118,78 @@ async def view_filed_forms(req: ViewFiledFormsRequest):
     return {"job_id": job_id, "status": "pending", "queue_position": pos}
 
 
+@app.post("/tds/api/v1/view-filed-forms/dashboard")
+async def view_filed_forms_dashboard(req: ViewFiledFormsDashboardRequest):
+    """
+    Fetch filed forms across form types and group them into the portal's
+    "Forms as per Income Tax Act 2025 / 1961 / Other Acts" tabs — mirrors
+    https://eportal.incometax.gov.in/iec/foservices/#/dashboard/statForms/viewFiledForms
+    """
+    existing = _active_tan_job(req.tan, "view_filed_forms_dashboard")
+    if existing:
+        return {
+            "job_id":  existing["id"],
+            "status":  existing["status"],
+            "message": f"A view_filed_forms_dashboard job for TAN {req.tan} is already {existing['status']}.",
+        }
+
+    pending = _pending_count()
+    if pending >= _MAX_QUEUED:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Server busy — {pending} jobs queued. Try again later.",
+        )
+
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {
+            "id":         job_id,
+            "tan":        req.tan,
+            "type":       "view_filed_forms_dashboard",
+            "status":     "pending",
+            "created_at": datetime.now().isoformat(),
+        }
+    _save_jobs()
+    _job_queue.put((job_id, "view_filed_forms_dashboard", req))
+    pos = _queue_position(job_id)
+    return {"job_id": job_id, "status": "pending", "queue_position": pos}
+
+
+@app.get("/tds/api/v1/view-filed-forms/{tan}/dashboard")
+async def get_filed_forms_dashboard(tan: str):
+    """Read the cached View-Filed-Forms dashboard (Act 2025 / 1961 / Other Acts tabs) for a TAN.
+
+    Returns 202 (not the cached file) while a dashboard fetch for this TAN
+    is still pending/running, so callers don't mistake stale data from a
+    previous run for the result of the one they just triggered.
+    """
+    active = _active_tan_job(tan, "view_filed_forms_dashboard")
+    if active:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "job_id":  active["id"],
+                "status":  active["status"],
+                "message": f"A view_filed_forms_dashboard fetch for TAN {tan} is still {active['status']}. Poll /tds/api/v1/jobs/{active['id']} or retry this endpoint shortly.",
+            },
+        )
+
+    dash_path = os.path.join(FILED_FORMS_DIR, tan, f"{tan}_view_filed_forms_dashboard.json")
+    if not os.path.exists(dash_path):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No filed-forms dashboard cached for TAN {tan}. "
+                "Run POST /tds/api/v1/view-filed-forms/dashboard first."
+            ),
+        )
+    try:
+        with open(dash_path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read dashboard: {exc}")
+
+
 @app.post("/tds/api/v1/challan/csi")
 async def create_csi_job(req: CSIRequest):
     """Download the CSI (Challan Status Inquiry) file for a TAN/date range."""
@@ -1036,7 +1228,22 @@ async def get_filed_forms(tan: str, form_type_cd: str):
     """Return the cached filed forms data for a TAN and form type.
 
     Example: GET /tds/api/v1/view-filed-forms/PTLA13241E/F27EQ
+
+    Returns 202 (not the cached file) while a fetch for this TAN is still
+    pending/running, so callers don't mistake stale data from a previous
+    run for the result of the one they just triggered.
     """
+    active = _active_tan_job(tan, "view_filed_forms")
+    if active:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "job_id":  active["id"],
+                "status":  active["status"],
+                "message": f"A view_filed_forms fetch for TAN {tan} is still {active['status']}. Poll /tds/api/v1/jobs/{active['id']} or retry this endpoint shortly.",
+            },
+        )
+
     form_path = os.path.join(FILED_FORMS_DIR, tan, form_type_cd, f"{tan}_{form_type_cd}.json")
     if not os.path.exists(form_path):
         raise HTTPException(

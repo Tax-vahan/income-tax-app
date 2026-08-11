@@ -42,6 +42,26 @@ def act_type_for_fy(fy_str: str, date_str: str = None) -> str:
         return "O"
     return "N" if dt >= NEW_ACT_CUTOVER else "O"
 
+
+def act_bucket_for_form_type(form_type_cd: str) -> str:
+    """
+    Classifies a viewFiledForms `formTypeCd` into the portal's "View Filed
+    Forms" tab buckets. The viewFiledForms API returns no act/year field —
+    live capture confirms an identical request payload for every tab — so
+    the portal itself splits purely by the formTypeCd prefix convention:
+    'T...' codes (e.g. T143, T140) were re-issued under the Income-tax Act
+    2025; legacy 'F...' codes (e.g. F27EQ, F26Q, F24Q) stayed under the
+    Income-tax Act 1961. Anything else falls under "Other Acts".
+    """
+    if not form_type_cd:
+        return "other"
+    cd = form_type_cd.strip().upper()
+    if cd.startswith("T"):
+        return "act_2025"
+    if cd.startswith("F"):
+        return "act_1961"
+    return "other"
+
 # Runtime data directory — /app/data in Docker (mounted volume), ./data locally
 _DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "data"))
 os.makedirs(_DATA_DIR, exist_ok=True)
