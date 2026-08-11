@@ -1,6 +1,6 @@
 from pathlib import Path
 import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -30,7 +30,12 @@ class Settings(BaseSettings):
     RETRY_ATTEMPTS: int = 3
     RETRY_WAIT_TIME: int = 2
 
-    class Config:
-        env_file = str(BASE_DIR.parent / ".env")
+    # extra="ignore": the repo-root .env is shared with unrelated modules
+    # (fetcher, taxvahan_api, ...) — this Settings class must not blow up on
+    # keys it doesn't declare, e.g. TAXVAHAN_API_BASE.
+    model_config = SettingsConfigDict(
+        env_file=str(BASE_DIR.parent / ".env"),
+        extra="ignore",
+    )
 
 settings = Settings()

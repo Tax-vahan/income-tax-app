@@ -649,8 +649,18 @@ def get_session(cfg: dict) -> Tuple:
     """
     tan          = cfg["TAN"]
     proxy        = cfg.get("PROXY", "")
-    session_file = cfg.get("SESSION_FILE", "tds_session.json")
     session_ttl  = cfg.get("SESSION_TTL", 3600)
+
+    # Scope the session cache file per-TAN. A single shared path (the old
+    # behaviour) meant whichever TAN logged in most recently "owned" the
+    # file — every other TAN's saved cookies got overwritten, so alternating
+    # between TANs caused a full Selenium login on every request even
+    # within SESSION_TTL. load_session() already discards on a tan
+    # mismatch, so this was silently defeating session reuse rather than
+    # ever using the wrong TAN's session.
+    configured_file = cfg.get("SESSION_FILE", "tds_session.json")
+    session_dir, session_name = os.path.split(configured_file)
+    session_file = os.path.join(session_dir, f"{tan}_{session_name}")
 
     # ── Attempt session reuse (no Chrome needed) ────────────────────────
     saved = load_session(session_file, tan, session_ttl)

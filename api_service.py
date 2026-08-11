@@ -5,11 +5,12 @@ import queue
 import threading
 import logging
 from datetime import datetime
+import re
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from fetcher.main import run_fetch
 from fetcher.core.api  import fetch_entity_profile, fetch_csi_file
@@ -214,6 +215,37 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="TDS Challan API", version="6.0", lifespan=lifespan, docs_url="/tds/docs", openapi_url="/tds/openapi.json", redoc_url="/tds/redoc")
 
 
+# ── API key gate ───────────────────────────────────────────────────────────────
+# Every /tds/api/v1/* route accepts a plaintext TAN + eportal password and
+# executes real Selenium logins / returns cached TAN data — previously with
+# no authentication at all. Require a shared key on every request under that
+# prefix except the health checks. Configure via the TDS_API_KEY env var
+# (see .env.example) — fails closed (401/503) if unset, rather than silently
+# allowing unauthenticated access.
+TDS_API_KEY = os.environ.get("TDS_API_KEY")
+_API_KEY_EXEMPT_PATHS = {"/health", "/tds/api/health"}
+_API_KEY_HEADER = "X-API-Key"
+
+
+@app.middleware("http")
+async def _require_tds_api_key(request: Request, call_next):
+    path = request.url.path
+    if path in _API_KEY_EXEMPT_PATHS or not path.startswith("/tds/api/v1"):
+        return await call_next(request)
+    if not TDS_API_KEY:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Server misconfigured: TDS_API_KEY is not set."},
+        )
+    supplied = request.headers.get(_API_KEY_HEADER) or request.query_params.get("api_key")
+    if not supplied or supplied != TDS_API_KEY:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": f"Missing or invalid {_API_KEY_HEADER} header."},
+        )
+    return await call_next(request)
+
+
 from fastapi import Depends
 
 async def check_pan_enabled(request: Request):
@@ -373,18 +405,60 @@ def _queue_position(job_id: str) -> int:
     return 0
 
 
-# ── Models ─────────────────────────────────────────────────────────────────────
+# ── Validation ─────────────────────────────────────────────────────────────────
+# tan/form_type_cd get joined directly into filesystem paths (FILED_FORMS_DIR,
+# DATA_DIR, DOWNLOAD_DIR, ...) by both request models and raw path params on
+# GET routes. Reject anything that isn't the portal's actual format before it
+# ever reaches os.path.join(), rather than trusting caller input as a path
+# segment.
+TAN_RE           = re.compile(r"^[A-Z]{4}[0-9]{5}[A-Z]$")
+FORM_TYPE_CD_RE  = re.compile(r"^[A-Z0-9]{2,10}$")
 
-class FetchRequest(BaseModel):
-    tan:           str
+
+def _validate_tan(tan: str) -> str:
+    if not TAN_RE.match(tan or ""):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid TAN format: {tan!r}. Expected 4 letters + 5 digits + 1 letter (e.g. PTLA13241E).",
+        )
+    return tan
+
+
+def _validate_form_type_cd(cd: str) -> str:
+    if not FORM_TYPE_CD_RE.match(cd or ""):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid form_type_cd format: {cd!r}. Expected 2-10 uppercase letters/digits (e.g. T143, F27EQ).",
+        )
+    return cd
+
+
+# ── Models ─────────────────────────────────────────────────────────────────────
+#
+# All `tan` fields below are validated by TanModel; any model with a
+# form_type_cd also validates it. Pydantic field_validator raises ValueError,
+# which FastAPI turns into a clean 422 — this runs before the value ever
+# reaches os.path.join() in a job runner.
+
+class TanModel(BaseModel):
+    tan: str
+
+    @field_validator("tan")
+    @classmethod
+    def _tan_format(cls, v: str) -> str:
+        if not TAN_RE.match(v or ""):
+            raise ValueError(f"Invalid TAN format: {v!r}. Expected 4 letters + 5 digits + 1 letter (e.g. PTLA13241E).")
+        return v
+
+
+class FetchRequest(TanModel):
     password:      str
     from_date:     str
     to_date:       str
     financialYear: Optional[str] = None
 
 
-class VerifyChallansRequest(BaseModel):
-    tan:            str
+class VerifyChallansRequest(TanModel):
     password:       str
     deductorId:     str
     financialYear:  str
@@ -396,15 +470,20 @@ class VerifyChallansRequest(BaseModel):
     authToken:      str
 
 
-class EntityRequest(BaseModel):
-    tan:      str
+class EntityRequest(TanModel):
     password: str
 
 
-class ViewFiledFormsRequest(BaseModel):
-    tan:          str
+class ViewFiledFormsRequest(TanModel):
     password:     str
     form_type_cd: str
+
+    @field_validator("form_type_cd")
+    @classmethod
+    def _form_type_format(cls, v: str) -> str:
+        if not FORM_TYPE_CD_RE.match(v or ""):
+            raise ValueError(f"Invalid form_type_cd format: {v!r}. Expected 2-10 uppercase letters/digits (e.g. T143, F27EQ).")
+        return v
 
 
 # Known formTypeCd values per "View Filed Forms" tab bucket (see
@@ -414,14 +493,22 @@ class ViewFiledFormsRequest(BaseModel):
 DEFAULT_FORM_TYPE_CDS = ["T143", "T140", "T138", "T144", "F27EQ", "F26Q", "F24Q", "F27Q"]
 
 
-class ViewFiledFormsDashboardRequest(BaseModel):
-    tan:           str
+class ViewFiledFormsDashboardRequest(TanModel):
     password:      str
     form_type_cds: Optional[List[str]] = None  # defaults to DEFAULT_FORM_TYPE_CDS
 
+    @field_validator("form_type_cds")
+    @classmethod
+    def _form_type_cds_format(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        for cd in v:
+            if not FORM_TYPE_CD_RE.match(cd or ""):
+                raise ValueError(f"Invalid form_type_cd format: {cd!r}. Expected 2-10 uppercase letters/digits (e.g. T143, F27EQ).")
+        return v
 
-class CSIRequest(BaseModel):
-    tan:           str
+
+class CSIRequest(TanModel):
     password:      str
     from_date:     str   # DD/MM/YYYY, consistent with FetchRequest
     to_date:       str   # DD/MM/YYYY
@@ -924,7 +1011,18 @@ async def job_websocket(websocket: WebSocket, job_id: str):
     """
     WebSocket endpoint for the frontend to receive real-time updates on a job's status.
     The frontend won't have to guess or spam HTTP polling requests.
+
+    The HTTP API-key middleware doesn't run for WebSocket connections (different
+    ASGI scope), so this route is gated separately here — pass the key as
+    ?api_key=... on the connect URL (browsers can't set custom WS headers).
     """
+    if not TDS_API_KEY:
+        await websocket.close(code=1008, reason="Server misconfigured: TDS_API_KEY not set.")
+        return
+    supplied = websocket.query_params.get("api_key")
+    if not supplied or supplied != TDS_API_KEY:
+        await websocket.close(code=1008, reason="Missing or invalid api_key.")
+        return
     await websocket.accept()
     try:
         while True:
@@ -1067,6 +1165,7 @@ async def fetch_entity(req: EntityRequest):
 @app.get("/tds/api/v1/entity/{tan}")
 async def get_entity_profile(tan: str):
     """Return the cached entity profile for a TAN."""
+    _validate_tan(tan)
     profile_path = os.path.join(DATA_DIR, f"{tan}_entity_profile.json")
     if not os.path.exists(profile_path):
         raise HTTPException(
@@ -1163,6 +1262,7 @@ async def get_filed_forms_dashboard(tan: str):
     is still pending/running, so callers don't mistake stale data from a
     previous run for the result of the one they just triggered.
     """
+    _validate_tan(tan)
     active = _active_tan_job(tan, "view_filed_forms_dashboard")
     if active:
         return JSONResponse(
@@ -1233,6 +1333,8 @@ async def get_filed_forms(tan: str, form_type_cd: str):
     pending/running, so callers don't mistake stale data from a previous
     run for the result of the one they just triggered.
     """
+    _validate_tan(tan)
+    _validate_form_type_cd(form_type_cd)
     active = _active_tan_job(tan, "view_filed_forms")
     if active:
         return JSONResponse(
