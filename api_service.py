@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 import re
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from typing import Optional, List
@@ -244,6 +245,38 @@ async def _require_tds_api_key(request: Request, call_next):
             content={"detail": f"Missing or invalid {_API_KEY_HEADER} header."},
         )
     return await call_next(request)
+
+
+# ── CORS ───────────────────────────────────────────────────────────────────────
+# The frontend (taxvahan.com) calls this service directly from the browser.
+# POST requests with Content-Type: application/json, and the X-API-Key
+# header required above, both force the browser to send a CORS preflight
+# (OPTIONS) request first.
+#
+# This MUST be registered (app.add_middleware(...)) AFTER the API-key
+# middleware above, not before. Starlette's add_middleware() does
+# user_middleware.insert(0, ...) — each new registration goes to the FRONT
+# of the list — and the middleware stack is built by wrapping in reverse
+# order, so counterintuitively the LAST middleware *registered* ends up
+# OUTERMOST (runs first on the way in). Registering CORS after the API-key
+# check makes CORS outermost, so it intercepts and answers preflight OPTIONS
+# requests itself before they ever reach the API-key check (which has no
+# notion of CORS headers and would otherwise 401/503 the preflight — which
+# the browser then reports as a bare "CORS error" instead of the real
+# status, exactly what happened when this was ordered the other way).
+_CORS_ALLOWED_ORIGINS = [
+    o.strip() for o in os.environ.get(
+        "CORS_ALLOWED_ORIGINS",
+        "https://taxvahan.com,https://www.taxvahan.com",
+    ).split(",") if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 from fastapi import Depends
