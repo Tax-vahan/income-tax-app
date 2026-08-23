@@ -73,11 +73,11 @@ class TDSTCSService:
 
         threading.Thread(target=_do_flush, daemon=True).start()
 
-    def _patch_request(self, request_id: str, updates: dict):
+    def _patch_request(self, request_id: str, **fields):
         """Update request with thread safety"""
         with self.jobs_lock:
             if request_id in self.requests:
-                self.requests[request_id].update(updates)
+                self.requests[request_id].update(fields)
                 self.requests[request_id]['updated_at'] = datetime.utcnow().isoformat()
         self._save_requests_debounced()
 
