@@ -118,23 +118,32 @@ class TDSTCSAutomation:
             logger.error(f"Error in TDS/TCS GET {url}: {str(e)}")
             raise PortalTimeoutError(f"TDS/TCS request failed: {str(e)}")
 
-    async def get_form_types(self, session_data: dict, it_act_flag: bool = True) -> list[dict]:
+    async def get_form_types(self, session_data: dict, it_act_flag: str = "IT_ACT_2025") -> list[dict]:
         """
         GET tdscerts/restapi/getFormType?itActFlag= -> [{code, description}] e.g. 130/131/133
 
-        itActFlag=true (Income-tax Act 2025) is the default here — 130/131/133
-        are 2025-Act certificate codes, and itActFlag=false (Act 1961) was
-        confirmed live 2026-08-23 to make TRACES itself throw an unhandled
-        500 ("Internal Server Error") for this combination, not a clean 4xx.
+        CONFIRMED live 2026-08-23: itActFlag is a string enum
+        ("IT_ACT_2025"/presumably "IT_ACT_1961"), NOT a boolean. Two earlier
+        attempts sending itActFlag=true / itActFlag=false both made TRACES
+        throw an unhandled 500 ("Internal Server Error") — neither string
+        matches its enum, so it never reaches a clean 4xx. 130/131/133 are
+        2025-Act certificate codes, hence IT_ACT_2025 as the default.
         """
         url = f"{API_BASE}/tdscerts/restapi/getFormType"
-        data = await self._get(session_data, url, {"itActFlag": str(it_act_flag).lower()})
+        data = await self._get(session_data, url, {"itActFlag": it_act_flag})
         return data if isinstance(data, list) else data.get("formType", [])
 
-    async def get_financial_years(self, session_data: dict, it_act_flag: bool = False) -> list[dict]:
-        """GET tdscerts/restapi/getFinYear?itActFlag= -> [{code, description}]"""
+    async def get_financial_years(self, session_data: dict, it_act_flag: str = "IT_ACT_2025") -> list[dict]:
+        """
+        GET tdscerts/restapi/getFinYear?itActFlag= -> [{code, description}]
+
+        Not directly observed live, but same endpoint family and same
+        itActFlag param as the confirmed getFormType fix above — using the
+        same string-enum convention rather than the boolean that's now known
+        to be wrong for this API.
+        """
         url = f"{API_BASE}/tdscerts/restapi/getFinYear"
-        data = await self._get(session_data, url, {"itActFlag": str(it_act_flag).lower()})
+        data = await self._get(session_data, url, {"itActFlag": it_act_flag})
         return data if isinstance(data, list) else data.get("finYear", [])
 
     async def get_quarters(self, session_data: dict, financial_year: str) -> list[dict]:
