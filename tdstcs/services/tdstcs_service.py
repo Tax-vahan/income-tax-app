@@ -166,7 +166,12 @@ class TDSTCSService:
             "request_id": request_id,
             "status": status,
             "message": processing_status,
-            "transaction_id": traces_request_id,
+            # TRACES returns requestId as a JSON number (confirmed live
+            # 2026-08-23, e.g. 250992502) — InitiateTDSTCSResponse declares
+            # transaction_id as Optional[str], so cast it or FastAPI's
+            # response-model validation rejects the whole response with a
+            # 500 even though the TRACES call itself already succeeded.
+            "transaction_id": str(traces_request_id) if traces_request_id is not None else None,
         }
 
     async def get_status(self, session_id: str, request_id: str) -> dict:
