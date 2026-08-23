@@ -118,8 +118,15 @@ class TDSTCSAutomation:
             logger.error(f"Error in TDS/TCS GET {url}: {str(e)}")
             raise PortalTimeoutError(f"TDS/TCS request failed: {str(e)}")
 
-    async def get_form_types(self, session_data: dict, it_act_flag: bool = False) -> list[dict]:
-        """GET tdscerts/restapi/getFormType?itActFlag= -> [{code, description}] e.g. 130/131/133"""
+    async def get_form_types(self, session_data: dict, it_act_flag: bool = True) -> list[dict]:
+        """
+        GET tdscerts/restapi/getFormType?itActFlag= -> [{code, description}] e.g. 130/131/133
+
+        itActFlag=true (Income-tax Act 2025) is the default here — 130/131/133
+        are 2025-Act certificate codes, and itActFlag=false (Act 1961) was
+        confirmed live 2026-08-23 to make TRACES itself throw an unhandled
+        500 ("Internal Server Error") for this combination, not a clean 4xx.
+        """
         url = f"{API_BASE}/tdscerts/restapi/getFormType"
         data = await self._get(session_data, url, {"itActFlag": str(it_act_flag).lower()})
         return data if isinstance(data, list) else data.get("formType", [])
