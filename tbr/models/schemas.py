@@ -15,10 +15,19 @@ class TBRStatusEnum(str, Enum):
 class QuarterDTO(BaseModel):
     code: str
     description: str
-    displayName: str
+    # Unconfirmed whether TBR's getQuarter always includes this (only
+    # tdscertificatesservice's getQuarter was observed live with it) —
+    # optional so a missing field doesn't break response validation.
+    displayName: Optional[str] = None
+
+
+class FinYearDTO(BaseModel):
+    code: str
+    description: str
 
 
 class TBRValidationRequest(BaseModel):
+    session_id: str = Field(..., description="Active session ID from /pan/login/complete")
     tan: str = Field(..., description="Tax Account Number")
     finYear: str = Field(..., description="Financial Year")
     quarter: str = Field(..., description="Quarter (Q1-Q4)")
@@ -57,9 +66,11 @@ class PaginatedTBRResponse(BaseModel):
     totalItems: int
     totalPages: int
     httpStatus: int = 200
+    traces_live_data: Optional[dict] = None
 
 
 class InitiateTBRRequest(BaseModel):
+    session_id: str = Field(..., description="Active session ID from /pan/login/complete")
     tan: str = Field(..., description="Tax Account Number")
     financial_year: int = Field(..., description="Financial Year")
     quarter: str = Field(..., description="Quarter")

@@ -213,7 +213,27 @@ async def lifespan(app: FastAPI):
     _flush_jobs()
     logger.info("Shutdown complete.")
 
-app = FastAPI(title="TDS Challan API", version="6.0", lifespan=lifespan, docs_url="/tds/docs", openapi_url="/tds/openapi.json", redoc_url="/tds/redoc")
+# Swagger/Redoc-only: registers X-API-Key as an OpenAPI security scheme so
+# Swagger UI shows an "Authorize" padlock where the key can be entered once
+# and have it auto-attached to every "Try it out" call, instead of having to
+# add the header by hand on each request. auto_error=False means this
+# dependency never itself rejects a request — actual enforcement is still
+# done exclusively by the _require_tds_api_key middleware below; this is
+# purely so the key shows up in the docs UI.
+from fastapi.security import APIKeyHeader
+from fastapi import Security
+
+_api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+app = FastAPI(
+    title="TDS Challan API",
+    version="6.0",
+    lifespan=lifespan,
+    docs_url="/tds/docs",
+    openapi_url="/tds/openapi.json",
+    redoc_url="/tds/redoc",
+    dependencies=[Security(_api_key_scheme)],
+)
 
 
 # ── API key gate ───────────────────────────────────────────────────────────────

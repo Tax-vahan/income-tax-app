@@ -24,10 +24,11 @@ class GetQuartersResponse(BaseModel):
 
 
 class InitiateTDSTCSRequest(BaseModel):
+    session_id: str = Field(..., description="Active session ID from /pan/login/complete")
     tan: str = Field(..., description="Tax Account Number")
     financial_year: str = Field(..., description="Financial year (e.g., 2026-27)")
     quarter: str = Field(..., description="Quarter (Q1, Q2, Q3, Q4)")
-    form_type: str = Field(..., description="Form type code (131, 133)")
+    form_type: str = Field(..., description="Form type code (130, 131, 133)")
 
 
 class InitiateTDSTCSResponse(BaseModel):
