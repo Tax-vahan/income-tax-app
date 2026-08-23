@@ -229,6 +229,22 @@ class TDSTCSAutomation:
                 body = {"raw": raw_text}
             if status not in (200, 201, 202):
                 logger.error(f"TDS/TCS initiate failed with status {status}: {raw_text[:500]!r}")
+                # TRACES's own error body (confirmed live 2026-08-23, e.g.
+                # {"errorCode":5000,"message":"An unexpected error occurred.",
+                # "nature":"TECHNICAL","severity":"FATAL",...}) is a generic
+                # platform error shape, not something specific to our
+                # request — the same payload replayed directly on
+                # traces.tdscpc.gov.in produces the identical 500. Surface
+                # TRACES's own message plus that context instead of dumping
+                # the raw dict repr; full body still goes to the log above.
+                traces_message = body.get("message") if isinstance(body, dict) else None
+                if traces_message:
+                    raise PortalTimeoutError(
+                        f"TRACES reported a technical error while processing this request: "
+                        f"\"{traces_message}\" This occurs on TRACES's side (confirmed by replaying "
+                        f"the identical request directly on the portal) — try again later, or try a "
+                        f"different quarter/form type."
+                    )
                 raise PortalTimeoutError(f"TDS/TCS initiate failed: HTTP {status}: {body}")
             return body
         except (PortalTimeoutError, NavigationFailureError):
