@@ -232,7 +232,17 @@ app = FastAPI(
     docs_url="/tds/docs",
     openapi_url="/tds/openapi.json",
     redoc_url="/tds/redoc",
-    dependencies=[Security(_api_key_scheme)],
+    # NOT `dependencies=[Security(_api_key_scheme)]` here — that applies to
+    # EVERY route on app.router, including WebSocket routes (both the job
+    # ws below and tdstcs's status ws). APIKeyHeader.__call__() requires an
+    # HTTP Request object; FastAPI can't supply one for a WebSocket-scope
+    # connection, so any websocket route caught by a global app-level
+    # Security dependency crashes with "APIKeyHeader.__call__() missing 1
+    # required positional argument: 'request'" before the handler even
+    # runs (confirmed live 2026-08-23). Scoped per-router below instead, so
+    # it still decorates Swagger for the HTTP routers without touching the
+    # bare @app.websocket(...) routes, which do their own manual api_key
+    # check inline (see job_websocket / tdstcs_status_websocket).
 )
 
 
@@ -305,11 +315,11 @@ async def check_pan_enabled(request: Request):
     if getattr(request.app.state, "pan_enabled", False) is False:
         raise HTTPException(status_code=503, detail="PAN Verification service is currently unavailable.")
 
-app.include_router(tbr_router, prefix="/tds/api/v1", tags=["TBR"])
-app.include_router(tdstcs_router, prefix="/tds/api/v1", tags=["TDS/TCS Certificates"])
-app.include_router(justification_router, prefix="/tds/api/v1", tags=["Justification Report"])
-app.include_router(conso_router, prefix="/tds/api/v1", tags=["CONSO File"])
-app.include_router(pan_router, prefix="/pan-verification", tags=["PAN Verification"], dependencies=[Depends(check_pan_enabled)])
+app.include_router(tbr_router, prefix="/tds/api/v1", tags=["TBR"], dependencies=[Security(_api_key_scheme)])
+app.include_router(tdstcs_router, prefix="/tds/api/v1", tags=["TDS/TCS Certificates"], dependencies=[Security(_api_key_scheme)])
+app.include_router(justification_router, prefix="/tds/api/v1", tags=["Justification Report"], dependencies=[Security(_api_key_scheme)])
+app.include_router(conso_router, prefix="/tds/api/v1", tags=["CONSO File"], dependencies=[Security(_api_key_scheme)])
+app.include_router(pan_router, prefix="/pan-verification", tags=["PAN Verification"], dependencies=[Depends(check_pan_enabled), Security(_api_key_scheme)])
 
 @app.exception_handler(AutomationError)
 async def automation_exception_handler(request: Request, exc: AutomationError):
@@ -1103,6 +1113,68 @@ async def job_websocket(websocket: WebSocket, job_id: str):
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for job {job_id}")
 
+
+_TDSTCS_STATUS_POLL_INTERVAL_SECONDS = 6
+_TDSTCS_TERMINAL_STATUSES = ("COMPLETED", "FAILED", "NOT_FOUND")
+
+
+@app.websocket("/tds/api/v1/tdstcs/{request_id}/ws")
+async def tdstcs_status_websocket(websocket: WebSocket, request_id: str):
+    """
+    Real-time status push for a TDS/TCS certificate request — lets the
+    frontend stop polling GET /tdstcs/status/{request_id} by hand.
+
+    Deliberately a bare @app.websocket(...) route, NOT registered on
+    tdstcs_router — that router now carries dependencies=[Security(...)]
+    for the Swagger padlock (see app.include_router(tdstcs_router, ...)
+    below), and a global/router-level Security(APIKeyHeader) dependency
+    crashes any WebSocket route it touches with "APIKeyHeader.__call__()
+    missing 1 required positional argument: 'request'" (confirmed live
+    2026-08-23) — APIKeyHeader expects an HTTP Request, which FastAPI can't
+    supply for a WebSocket-scope connection. Same reasoning and same
+    manual api_key-over-query-param gate as job_websocket above.
+
+    Query params: session_id (required — active session from
+    /pan-verification/login/complete), api_key (required, matches
+    TDS_API_KEY).
+    """
+    if not TDS_API_KEY:
+        await websocket.close(code=1008, reason="Server misconfigured: TDS_API_KEY not set.")
+        return
+    supplied = websocket.query_params.get("api_key")
+    if not supplied or supplied != TDS_API_KEY:
+        await websocket.close(code=1008, reason="Missing or invalid api_key.")
+        return
+
+    session_id = websocket.query_params.get("session_id")
+    if not session_id:
+        await websocket.close(code=1008, reason="Missing session_id.")
+        return
+
+    await websocket.accept()
+    service = TDSTCSServiceFactory.get_instance()
+    try:
+        while True:
+            try:
+                status = await service.get_status(session_id, request_id)
+            except Exception as e:
+                logger.error(f"TDS/TCS status WS check failed for {request_id}: {e}", exc_info=True)
+                await websocket.send_json({
+                    "request_id": request_id,
+                    "status": "ERROR",
+                    "is_ready": False,
+                    "message": str(e),
+                })
+                break
+
+            await websocket.send_json(status)
+
+            if status.get("status") in _TDSTCS_TERMINAL_STATUSES:
+                break
+
+            await asyncio.sleep(_TDSTCS_STATUS_POLL_INTERVAL_SECONDS)
+    except WebSocketDisconnect:
+        logger.info(f"TDS/TCS status WS disconnected for {request_id}")
 
 
 @app.get("/tds/api/v1/jobs/{job_id}/download")

@@ -1,7 +1,5 @@
 import io
-import os
-import asyncio
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from tdstcs.models.schemas import (
     InitiateTDSTCSRequest,
@@ -152,63 +150,3 @@ async def list_certificates(tan: str, page: int = 0, page_size: int = 10):
     except Exception as e:
         logger.error(f"Error listing certificates: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-_TDS_API_KEY = os.environ.get("TDS_API_KEY")
-_STATUS_POLL_INTERVAL_SECONDS = 6
-_TERMINAL_STATUSES = ("COMPLETED", "FAILED", "NOT_FOUND")
-
-
-@router.websocket("/tdstcs/{request_id}/ws")
-async def tdstcs_status_websocket(websocket: WebSocket, request_id: str):
-    """
-    Real-time status push for a TDS/TCS certificate request — lets the
-    frontend stop polling GET /tdstcs/status/{request_id} by hand.
-
-    The HTTP API-key middleware in api_service.py doesn't run for WebSocket
-    connections (different ASGI scope), so this route is gated separately
-    here — same pattern as /tds/api/v1/jobs/{job_id}/ws in api_service.py:
-    pass the key as ?api_key=... on the connect URL, since browsers can't
-    set custom headers on a WebSocket handshake.
-
-    Query params: session_id (required — active session from
-    /pan-verification/login/complete), api_key (required, matches
-    TDS_API_KEY).
-    """
-    if not _TDS_API_KEY:
-        await websocket.close(code=1008, reason="Server misconfigured: TDS_API_KEY not set.")
-        return
-    supplied_key = websocket.query_params.get("api_key")
-    if not supplied_key or supplied_key != _TDS_API_KEY:
-        await websocket.close(code=1008, reason="Missing or invalid api_key.")
-        return
-
-    session_id = websocket.query_params.get("session_id")
-    if not session_id:
-        await websocket.close(code=1008, reason="Missing session_id.")
-        return
-
-    await websocket.accept()
-    service = TDSTCSServiceFactory.get_instance()
-    try:
-        while True:
-            try:
-                status = await service.get_status(session_id, request_id)
-            except Exception as e:
-                logger.error(f"Status WS check failed for {request_id}: {e}", exc_info=True)
-                await websocket.send_json({
-                    "request_id": request_id,
-                    "status": "ERROR",
-                    "is_ready": False,
-                    "message": str(e),
-                })
-                break
-
-            await websocket.send_json(status)
-
-            if status.get("status") in _TERMINAL_STATUSES:
-                break
-
-            await asyncio.sleep(_STATUS_POLL_INTERVAL_SECONDS)
-    except WebSocketDisconnect:
-        logger.info(f"TDS/TCS status WS disconnected for {request_id}")
