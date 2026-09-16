@@ -3,7 +3,7 @@ name: Build and Deploy Taxvahan Tds Api Service
 on:
   push:
     branches:
-      - main
+      - dev
 
 permissions:
   contents: read
@@ -11,9 +11,9 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: taxvahan-tds-pan-api
+  IMAGE_NAME: dev-taxvahan-tds-pan-api
   COMPOSE_SERVICE: taxvahan-tds-pan-api
-  DEPLOY_DIR: /root/taxvahan-update
+  DEPLOY_DIR: /root/dev-taxvahan
   COMPOSE_FILE: tds-api-compose.yaml
 
 jobs:
@@ -67,9 +67,9 @@ jobs:
       - name: Deploy Taxvahan Frontend to Server
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          password: ${{ secrets.SSH_PASSWORD }}
+          host: ${{ secrets.DEV_SSH_HOST }}
+          username: ${{ secrets.DEV_SSH_USER }}
+          password: ${{ secrets.DEV_SSH_PASSWORD }}
           port: 22
           script: |
             set -e
@@ -136,6 +136,6 @@ jobs:
             docker image prune -f
 
             echo "========================================"
-            echo "Taxvahan Frontend deployment completed"
+            echo "Taxvahan Tds Api deployment completed"
             echo "Image: ${IMAGE}:${IMAGE_TAG}"
             echo "========================================"
